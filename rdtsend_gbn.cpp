@@ -66,14 +66,24 @@ void recv_task(){
                 break;
             }else {        
                 std::lock_guard<std::mutex> lg(winMutex);  
-                // 收到确认，滑动窗口前推
-                #ifdef DEBUG  
-                    printf("ACK %u\n", pktBuf.seqnum);
-                #endif
+                // 收到确认，如果确认号是滑动窗口第一个，则前推滑动窗口
                 // base.store(pktBuf.seqnum + 1);
+                auto lastBase = base;
                 base = (pktBuf.seqnum + 1) % NUM_SEQNUM;
-                rdt_t* abandoned;
-                auto b = sndpkt.pop(abandoned);
+                rdt_t* abandoned = nullptr;
+                bool b = true;
+                if (base == (lastBase + 1) % NUM_SEQNUM){
+                    #ifdef DEBUG  
+                        printf("ACK %u\n", pktBuf.seqnum);
+                    #endif
+                    b = sndpkt.pop(abandoned);
+                    if(abandoned != nullptr){
+                        delete abandoned;
+                        abandoned = nullptr;
+                    }
+                } else {
+                    printf("DUP ACK %u\n");
+                }
                 #ifdef DEBUG
                     assert(b);
                     auto size = (nextseqnum - base + NUM_SEQNUM) % NUM_SEQNUM;
@@ -81,10 +91,7 @@ void recv_task(){
                         printf("recv_task: size: %u, sndpkt.size(): %u\n", size, sndpkt.size());
                     }
                 #endif
-                if(abandoned != nullptr){
-                    delete abandoned;
-                    abandoned = nullptr;
-                }
+
                 notFull.notify_all();
                 // TODO: 删除base之前的节点，释放内存
                 if(sndpkt.empty()) {
@@ -110,7 +117,7 @@ void resend_task(){
             // 在超时范围内，队列没有被清空
             // auto beg = base.load();
             // auto end = nextseqnum.load();
-            printf("timeout: resend size %d", sndpkt.size());
+            printf("timeout: resend size %d\n", sndpkt.size());
             // for(auto i = beg; i < end; i++){
             //     sendto(senderSocket, (char*)sndpkt[i], sizeof(rdt_t), 0, (SOCKADDR *)&recverAddr, sizeof(SOCKADDR));
             // }
@@ -151,7 +158,14 @@ void rdt_send(char* data, uint16_t dataLen, uint8_t flag = 0){
             // auto tailBefore = sndpkt.getTail();
             make_pkt(pktBuf, flag, nextseqnum, (uint8_t*)data, dataLen);
             // sndpkt.push_back(pktBuf);
-            auto b = sndpkt.enqueue(pktBuf);
+            auto index = (nextseqnum - base + NUM_SEQNUM) % NUM_SEQNUM;
+            auto b = false;
+            if(index == sndpkt.size()){
+                b = sndpkt.enqueue(pktBuf);
+            }
+            else if(index < sndpkt.size()){
+                b = sndpkt.replace(index, pktBuf);
+            }
             #ifdef DEBUG
                 assert(b);
             #endif

@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <assert.h>
     
 /*
 maxsize: 3      arraysize: 3+1
@@ -33,6 +34,7 @@ public:
     CircleQueue(uint32_t _capacity);
     ~CircleQueue();
     bool enqueue(T ele);
+    bool replace(uint32_t index, T ele);
     bool pop(T& top);
     bool full();
     bool empty();
@@ -104,9 +106,9 @@ void CircleQueue<T>::rewind(){
 
 template<class T>
 bool CircleQueue<T>::getNext(T& next){
-    if(ind != tail){
+    if(ind != tail && head != tail){
         next = que[ind];
-        ind = (ind + 1);
+        ind = (ind + 1) % (capacity + 1);
         return true;
     } 
     return false;
@@ -114,7 +116,7 @@ bool CircleQueue<T>::getNext(T& next){
 
 template<class T>
 bool CircleQueue<T>::hasNext(){
-    return ind != tail;
+    return ind != tail && head != tail;
 }
 
 // template<class T>
@@ -122,5 +124,13 @@ bool CircleQueue<T>::hasNext(){
 //     return ind == head;
 // }
 
+template<class T>
+bool CircleQueue<T>::replace(uint32_t index, T ele){
+    if (index >= size()){
+        return false;
+    }
+    que[index] = ele;
+    return true;
+}
 
 #endif
