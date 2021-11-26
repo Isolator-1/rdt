@@ -10,9 +10,11 @@
 #include <condition_variable>
 #include <atomic>
 #include <thread>
+#include <assert.h>
 #include "./include/timer.hpp"
 #include "./include/rdt.hpp"
 #include "./include/def.hpp"
+#include "./include/circlequeue.tpp"
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -24,9 +26,12 @@ SOCKET senderSocket;
 SOCKADDR_IN recverAddr;
 
 
-std::atomic_uint base;         
-std::atomic_uint nextseqnum;   
-std::vector<rdt_t*> sndpkt;
+// std::atomic_uint base;         
+// std::atomic_uint nextseqnum;   
+uint32_t base = 0;
+uint32_t nextseqnum = 0;
+// std::vector<rdt_t*> sndpkt;
+CircleQueue<rdt_t*> sndpkt(N);      // 保存已发送但是待确认数据包的循环队列
 std::condition_variable notFull;    // 滑动窗口非满条件变量
 std::mutex winMutex;                // 滑动窗口锁
 Timer timer(TIMEOUT);               // 定时器，单位s，目前不是线程安全的
@@ -59,14 +64,37 @@ void recv_task(){
                     printf("FIN ACK %u\n", pktBuf.seqnum);
                 #endif
                 break;
-            }else {          
-                #ifdef DEBUG  
-                    printf("ACK %u\n", pktBuf.seqnum);
+            }else {        
+                std::lock_guard<std::mutex> lg(winMutex);  
+                // 收到确认，如果确认号是滑动窗口第一个，则前推滑动窗口
+                // base.store(pktBuf.seqnum + 1);
+                auto lastBase = base;
+                base = (pktBuf.seqnum + 1) % NUM_SEQNUM;
+                rdt_t* abandoned = nullptr;
+                bool b = true;
+                if (base == (lastBase + 1) % NUM_SEQNUM){
+                    #ifdef DEBUG  
+                        printf("ACK %u\n", pktBuf.seqnum);
+                    #endif
+                    b = sndpkt.pop(abandoned);
+                    if(abandoned != nullptr){
+                        delete abandoned;
+                        abandoned = nullptr;
+                    }
+                } else {
+                    printf("DUP ACK %u\n");
+                }
+                #ifdef DEBUG
+                    assert(b);
+                    auto size = (nextseqnum - base + NUM_SEQNUM) % NUM_SEQNUM;
+                    if(size != sndpkt.size()){
+                        printf("recv_task: size: %u, sndpkt.size(): %u\n", size, sndpkt.size());
+                    }
                 #endif
-                base.store(pktBuf.seqnum + 1);
+
                 notFull.notify_all();
                 // TODO: 删除base之前的节点，释放内存
-                if(base == nextseqnum) {
+                if(sndpkt.empty()) {
                     timer.stop();
                 }
                 else {
@@ -85,11 +113,28 @@ void resend_task(){
         if(timer.check()){
             std::this_thread::sleep_for(std::chrono::milliseconds(INTERVAL));
         } else {
-            auto beg = base.load();
-            auto end = nextseqnum.load();
-            printf("timeout: resend from %d to %d\n", beg, end - 1);
-            for(auto i = beg; i < end; i++){
-                sendto(senderSocket, (char*)sndpkt[i], sizeof(rdt_t), 0, (SOCKADDR *)&recverAddr, sizeof(SOCKADDR));
+            std::lock_guard<std::mutex> lg(winMutex);
+            // 在超时范围内，队列没有被清空
+            // auto beg = base.load();
+            // auto end = nextseqnum.load();
+            printf("timeout: resend size %d\n", sndpkt.size());
+            // for(auto i = beg; i < end; i++){
+            //     sendto(senderSocket, (char*)sndpkt[i], sizeof(rdt_t), 0, (SOCKADDR *)&recverAddr, sizeof(SOCKADDR));
+            // }
+            #ifdef DEBUG
+                auto size = (nextseqnum - base + NUM_SEQNUM) % NUM_SEQNUM;
+                if(size != sndpkt.size()){
+                    printf("resend_task: size: %u, sndpkt.size(): %u\n", size, sndpkt.size());
+                }
+            #endif
+            rdt_t* next;
+            sndpkt.rewind();
+            while(sndpkt.hasNext()){
+                sndpkt.getNext(next);
+                #ifdef DEBUG 
+                    assert(next != nullptr);
+                #endif
+                sendto(senderSocket, (char*)next, sizeof(rdt_t), 0, (SOCKADDR *)&recverAddr, sizeof(SOCKADDR));
             }
             timer.rewind();
         }
@@ -102,16 +147,36 @@ void resend_task(){
 void rdt_send(char* data, uint16_t dataLen, uint8_t flag = 0){
     std::unique_lock<std::mutex> ul(winMutex);
     while(true){
-        if (nextseqnum < base + N){
+        if (!sndpkt.full()){
+            #ifdef DEBUG
+                auto size = (nextseqnum - base + NUM_SEQNUM) % NUM_SEQNUM;
+                if(size != sndpkt.size()){
+                    printf("rdt_send: size: %u, sndpkt.size(): %u\n", size, sndpkt.size());
+                }
+            #endif
             rdt_t* pktBuf = new rdt_t();
+            // auto tailBefore = sndpkt.getTail();
             make_pkt(pktBuf, flag, nextseqnum, (uint8_t*)data, dataLen);
-            sndpkt.push_back(pktBuf);
+            // sndpkt.push_back(pktBuf);
+            auto index = (nextseqnum - base + NUM_SEQNUM) % NUM_SEQNUM;
+            auto b = false;
+            if(index == sndpkt.size()){
+                b = sndpkt.enqueue(pktBuf);
+            }
+            else if(index < sndpkt.size()){
+                b = sndpkt.replace(index, pktBuf);
+            }
+            #ifdef DEBUG
+                assert(b);
+            #endif
             sendto(senderSocket, (char*)pktBuf, sizeof(rdt_t), 0, (SOCKADDR *)&recverAddr, sizeof(SOCKADDR));
             if(base == nextseqnum){
-                // starttimer
+                // 队列中第一个待发送的包！
                 timer.rewind();
+                sndpkt.rewind();
             }
-            nextseqnum.store((nextseqnum.load() + 1));
+            // nextseqnum.store((nextseqnum.load() + 1));
+            nextseqnum = (nextseqnum + 1) % NUM_SEQNUM;
             break;
         }
         else {
@@ -180,8 +245,8 @@ int main(int argc, char** argv)
         return -1;
     }
 
-    base.store(0);
-    nextseqnum.store(0);
+    // base.store(0);
+    // nextseqnum.store(0);
     std::thread timerThread(resend_task);
     std::thread recvThread(recv_task);
 

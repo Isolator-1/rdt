@@ -30,6 +30,7 @@ void make_pkt(rdt_t* pktBuf, uint8_t flag, uint32_t seqnum, uint8_t* data, uint1
         p--;
         // printf("ckpt1\n");
         sum += *(uint8_t*)p;
+        rollback(sum);
     }
     pktBuf->sum = ~(sum & 0xFFFF);
 }
@@ -50,7 +51,9 @@ bool not_corrupt(rdt_t* pktBuf){
         p--;
         // printf("adder : %02x\n", *(uint8_t*)p);
         sum += *(uint8_t*)p;
+        rollback(sum);
     }
+    // printf("real sum: %04x\n", sum);
     return sum == 0xFFFF;
 }
 

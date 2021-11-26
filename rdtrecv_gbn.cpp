@@ -72,6 +72,8 @@ int main(int argc, char** argv)
                     printf("FIN\n");
                     fout.close();
                     make_pkt(&sendBuf, ACK_FLAG | FIN_FLAG, expectedseqnum, 0, 0);
+                    sendto(recverSocket, (char*)&sendBuf, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
+                    break;
                 }
                 else{
                     // print_pkt(&recvBuf);
