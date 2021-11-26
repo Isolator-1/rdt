@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define DATA_SIZE 1024
+#define DATA_SIZE 1015
 #define ACK_FLAG 0x1
 #define FIN_FLAG 0x2
 
