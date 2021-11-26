@@ -17,6 +17,10 @@ test_io: $(TEST_DIR)test_io.cpp
 	$(CC) $(CC_FLAGS) $^ -o $(BIN_DIR)$@
 	.\$(BIN_DIR)$@.exe
 
+test_cq: $(TEST_DIR)test_cq.cpp
+	$(CC) $(CC_FLAGS) $^ -o $(BIN_DIR)$@
+	.\$(BIN_DIR)$@.exe
+
 rdtsend_gbn: rdtsend_gbn.cpp timer.cpp rdt.cpp
 	$(CC) $(CC_FLAGS) $^ $(LIB) -o $(BIN_DIR)$@
 

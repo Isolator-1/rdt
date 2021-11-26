@@ -80,9 +80,9 @@ int main(int argc, char** argv)
                         fout.write((char*)recvBuf.data, recvBuf.dataLen);
                     }
                 }
+                make_pkt(&sendBuf, ACK_FLAG, expectedseqnum, 0, 0);
                 sendto(recverSocket, (char*)&sendBuf, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
                 expectedseqnum = (expectedseqnum + 1) % NUM_SEQNUM;
-                make_pkt(&sendBuf, ACK_FLAG, expectedseqnum, 0, 0);
             }
             else {
                 if(!b1){
