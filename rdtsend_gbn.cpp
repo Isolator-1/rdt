@@ -18,7 +18,7 @@
 
 #pragma comment(lib, "ws2_32.lib")
 
-#define TIMEOUT 5                   // 超时时间, 单位s
+#define TIMEOUT 0.5                 // 超时时间, 单位s
 #define INTERVAL 50                 // 检查定时器时间间隔，单位ms
 
 

@@ -76,8 +76,6 @@ int main(int argc, char** argv)
                     break;
                 }
                 else{
-                    // print_pkt(&recvBuf);
-                    // printf("%s\n", recvBuf.data);
                     if(fout.is_open()){
                         fout.write((char*)recvBuf.data, recvBuf.dataLen);
                     }
