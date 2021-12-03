@@ -20,7 +20,6 @@ struct rdt_t
 };
 
 #pragma pack()
-#endif
 
 /**
  * 校验和回卷
@@ -49,3 +48,5 @@ bool isAck(rdt_t* pktBuf);
 bool isFin(rdt_t* pktBuf);
 
 bool isSyn(rdt_t* pktBuf);
+
+#endif

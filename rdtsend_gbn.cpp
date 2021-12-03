@@ -46,7 +46,8 @@ void recv_task(){
         if (result == SOCKET_ERROR) {
             int e =  WSAGetLastError();
             if (e == 10054){
-                // 远程主机未发现错误
+                // 未发现远程主机错误，出现该错误通常是因为先启动发送方，后启动接收方，因此不因为该错误结束接收线程
+                printf("Cannot find recver\n");
                 continue;
             }
             printf("Receive error %d\n", e);
@@ -103,7 +104,6 @@ void recv_task(){
                 #endif
 
                 notFull.notify_all();
-                // TODO: 删除base之前的节点，释放内存
                 if(sndpkt.empty()) {
                     timer.stop();
                 }
@@ -111,6 +111,9 @@ void recv_task(){
                     timer.rewind();
                 }
             }
+        } else {
+            printf("Not ACK\n");
+            exit(1);
         }
     }
     printf("recv_task quit!\n");
@@ -165,6 +168,9 @@ void rdt_send(char* data, uint16_t dataLen, uint8_t flag = 0){
                 b = sndpkt.enqueue(pktBuf);
             }
             else if(index < sndpkt.size()){
+                rdt_t* abandon = sndpkt.index(index);
+                delete abandon;
+                abandon = nullptr; 
                 b = sndpkt.replace(index, pktBuf);
             }
             #ifdef DEBUG

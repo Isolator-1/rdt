@@ -42,10 +42,9 @@ public:
     void rewind();
     bool getNext(T& next);
     bool hasNext();
-    // bool isBegin();
     uint32_t getHead() const {return head;}
     uint32_t getTail() const {return tail;}
-    // uint32_t getInd() const {return ind;} 
+    T index(uint32_t ind) const {return que[ind];}
 };
 
 
@@ -132,5 +131,6 @@ bool CircleQueue<T>::replace(uint32_t index, T ele){
     que[index] = ele;
     return true;
 }
+
 
 #endif
