@@ -26,16 +26,13 @@ SOCKET senderSocket;
 SOCKADDR_IN recverAddr;
 
 
-// std::atomic_uint base;         
-// std::atomic_uint nextseqnum;   
 uint32_t base = 0;
 uint32_t nextseqnum = 0;
-// std::vector<rdt_t*> sndpkt;
 CircleQueue<rdt_t*> sndpkt(N);      // 保存已发送但是待确认数据包的循环队列
 std::condition_variable notFull;    // 滑动窗口非满条件变量
 std::mutex winMutex;                // 滑动窗口锁
 Timer timer(TIMEOUT);               // 定时器，单位s，目前不是线程安全的
-
+std::atomic_bool isConnect;         // 已连接
 
 
 void recv_task(){
@@ -47,7 +44,12 @@ void recv_task(){
     while(true){
         result = recvfrom(senderSocket, (char*)&pktBuf, sizeof(rdt_t), 0, (SOCKADDR*)&sock, &len);
         if (result == SOCKET_ERROR) {
-            printf("Receive error %d\n", WSAGetLastError());
+            int e =  WSAGetLastError();
+            if (e == 10054){
+                // 远程主机未发现错误
+                continue;
+            }
+            printf("Receive error %d\n", e);
             break;
         }
         if (result == 0) {
@@ -64,10 +66,16 @@ void recv_task(){
                     printf("FIN ACK %u\n", pktBuf.seqnum);
                 #endif
                 break;
-            }else {        
+            }else if(isSyn(&pktBuf)) {
+                #ifdef DEBUG
+                    printf("SYN ACK %u\n", pktBuf.seqnum);
+                #endif
+                isConnect.store(true);
+                continue;
+            }
+            else {        
                 std::lock_guard<std::mutex> lg(winMutex);  
                 // 收到确认，如果确认号是滑动窗口第一个，则前推滑动窗口
-                // base.store(pktBuf.seqnum + 1);
                 auto lastBase = base;
                 base = (pktBuf.seqnum + 1) % NUM_SEQNUM;
                 rdt_t* abandoned = nullptr;
@@ -82,7 +90,9 @@ void recv_task(){
                         abandoned = nullptr;
                     }
                 } else {
-                    printf("DUP ACK %u\n");
+                    #ifdef DEBUG
+                        printf("DUP ACK %u\n");
+                    #endif
                 }
                 #ifdef DEBUG
                     assert(b);
@@ -115,13 +125,8 @@ void resend_task(){
         } else {
             std::lock_guard<std::mutex> lg(winMutex);
             // 在超时范围内，队列没有被清空
-            // auto beg = base.load();
-            // auto end = nextseqnum.load();
-            printf("timeout: resend size %d\n", sndpkt.size());
-            // for(auto i = beg; i < end; i++){
-            //     sendto(senderSocket, (char*)sndpkt[i], sizeof(rdt_t), 0, (SOCKADDR *)&recverAddr, sizeof(SOCKADDR));
-            // }
             #ifdef DEBUG
+                printf("timeout: resend size %d\n", sndpkt.size());
                 auto size = (nextseqnum - base + NUM_SEQNUM) % NUM_SEQNUM;
                 if(size != sndpkt.size()){
                     printf("resend_task: size: %u, sndpkt.size(): %u\n", size, sndpkt.size());
@@ -142,8 +147,6 @@ void resend_task(){
     printf("resend_task quit!\n");
 }
 
-
-
 void rdt_send(char* data, uint16_t dataLen, uint8_t flag = 0){
     std::unique_lock<std::mutex> ul(winMutex);
     while(true){
@@ -155,9 +158,7 @@ void rdt_send(char* data, uint16_t dataLen, uint8_t flag = 0){
                 }
             #endif
             rdt_t* pktBuf = new rdt_t();
-            // auto tailBefore = sndpkt.getTail();
             make_pkt(pktBuf, flag, nextseqnum, (uint8_t*)data, dataLen);
-            // sndpkt.push_back(pktBuf);
             auto index = (nextseqnum - base + NUM_SEQNUM) % NUM_SEQNUM;
             auto b = false;
             if(index == sndpkt.size()){
@@ -175,7 +176,6 @@ void rdt_send(char* data, uint16_t dataLen, uint8_t flag = 0){
                 timer.rewind();
                 sndpkt.rewind();
             }
-            // nextseqnum.store((nextseqnum.load() + 1));
             nextseqnum = (nextseqnum + 1) % NUM_SEQNUM;
             break;
         }
@@ -186,6 +186,14 @@ void rdt_send(char* data, uint16_t dataLen, uint8_t flag = 0){
     }
 }
 
+void connect(){
+    rdt_t pktBuf;
+    make_pkt(&pktBuf, SYN_FLAG, 0, 0, 0);
+    while(!isConnect){
+        sendto(senderSocket, (char*)&pktBuf, sizeof(rdt_t), 0, (SOCKADDR *)&recverAddr, sizeof(SOCKADDR));
+        std::this_thread::sleep_for(std::chrono::milliseconds(INTERVAL));
+    }
+}
 
 int main(int argc, char** argv)
 {
@@ -245,28 +253,34 @@ int main(int argc, char** argv)
         return -1;
     }
 
-    // base.store(0);
-    // nextseqnum.store(0);
+    // 启动计时线程和接收线程
+    isConnect.store(false);
     std::thread timerThread(resend_task);
     std::thread recvThread(recv_task);
 
+    // 发送连接请求
+    printf("waiting to connect...\n");
+    connect();
+    printf("connected\n");
+
+    // 发送文件
     char sendBuf[DATA_SIZE];
     memset(sendBuf, 0, DATA_SIZE);
     std::ifstream fin(inputfile, std::ios::binary); 
     while(fin)
     {
         fin.read(sendBuf, DATA_SIZE);
-        // printf("gcount: %d\n", fin.gcount());
         rdt_send(sendBuf, fin.gcount());
         memset(sendBuf, 0, DATA_SIZE);
     }   
     fin.close();
 
-    rdt_send(0, 0, FIN_FLAG);
-
-    
     timerThread.detach();
+    // 断开连接
+    printf("waiting to disconnect...\n");
+    rdt_send(0, 0, FIN_FLAG);
     recvThread.join();
+    printf("disconnect\n");
 
     closesocket(senderSocket);
     WSACleanup();

@@ -3,9 +3,10 @@
 
 #include <stdint.h>
 
-#define DATA_SIZE 1015
+#define DATA_SIZE 10231
 #define ACK_FLAG 0x1
 #define FIN_FLAG 0x2
+#define SYN_FLAG 0x4
 
 #pragma pack(1)
 
@@ -46,3 +47,5 @@ void print_pkt(rdt_t* pktBuf);
 bool isAck(rdt_t* pktBuf);
 
 bool isFin(rdt_t* pktBuf);
+
+bool isSyn(rdt_t* pktBuf);

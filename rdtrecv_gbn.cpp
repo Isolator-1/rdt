@@ -69,13 +69,23 @@ int main(int argc, char** argv)
                     printf("SEQ %d\n", recvBuf.seqnum);
                 #endif
                 if(isFin(&recvBuf)){
-                    printf("FIN\n");
+                    #ifdef DEBUG
+                        printf("FIN\n");
+                    #endif
                     fout.close();
                     make_pkt(&sendBuf, ACK_FLAG | FIN_FLAG, expectedseqnum, 0, 0);
                     sendto(recverSocket, (char*)&sendBuf, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
                     break;
                 }
-                else{
+                else if (isSyn(&recvBuf)){
+                    #ifdef DEBUG
+                        printf("SYN\n");
+                    #endif
+                    make_pkt(&sendBuf, ACK_FLAG | SYN_FLAG, 0, 0, 0);
+                    sendto(recverSocket, (char*)&sendBuf, sizeof(rdt_t), 0, (SOCKADDR*)&senderAddr, sizeof(SOCKADDR));
+                    continue;
+                }   
+                else {
                     if(fout.is_open()){
                         fout.write((char*)recvBuf.data, recvBuf.dataLen);
                     }
@@ -86,10 +96,14 @@ int main(int argc, char** argv)
             }
             else {
                 if(!b1){
-                    printf("corrupt package\n");
+                    #ifdef DEBUG
+                        printf("corrupt package\n");
+                    #endif
                 }
                 if(!b2){
-                    printf("expect %d but receive %d\n", expectedseqnum, recvBuf.seqnum);
+                    #ifdef DEBUG
+                        printf("expect %d but receive %d\n", expectedseqnum, recvBuf.seqnum);
+                    #endif
                 }
                 sendto(recverSocket, (char*)&sendBuf, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
             }

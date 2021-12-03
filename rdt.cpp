@@ -78,3 +78,7 @@ bool isAck(rdt_t* pktBuf){
 bool isFin(rdt_t* pktBuf){
     return pktBuf->flag & FIN_FLAG;
 }
+
+bool isSyn(rdt_t* pktBuf){
+    return pktBuf->flag & SYN_FLAG;
+}
