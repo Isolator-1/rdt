@@ -1,3 +1,13 @@
+/**
+ * @file test_timer.cpp
+ * @author zqs
+ * @brief 测试计时器
+ * @version 0.1
+ * @date 2021-12-07
+ * 
+ * @copyright Copyright (c) 2021
+ * 
+ */
 #include <iostream>
 #include <chrono>
 #include <thread>

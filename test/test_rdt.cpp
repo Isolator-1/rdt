@@ -1,3 +1,13 @@
+/**
+ * @file test_rdt.cpp
+ * @author zqs
+ * @brief 测试校验和
+ * @version 0.1
+ * @date 2021-12-07
+ * 
+ * @copyright Copyright (c) 2021
+ * 
+ */
 #include "../include/rdt.hpp"
 #include <stdio.h>
 #include <fstream>

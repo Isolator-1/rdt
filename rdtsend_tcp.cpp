@@ -1,7 +1,7 @@
 /**
  * @file rdtsend_gbn.cpp
  * @author zqs
- * @brief 使用GBN协议的发送方
+ * @brief 使用类TCP协议的发送方
  * @version 0.1
  * @date 2021-12-07
  *
@@ -40,7 +40,7 @@ SOCKADDR_IN recverAddr;
 
 uint32_t base = 0;
 uint32_t nextseqnum = 0;
-CircleQueue<rdt_t *> sndpkt(N);  // 保存已发送但是待确认数据包的循环队列
+CircleQueue<rdt_t *> sendWin(N); // 保存已发送但是待确认数据包的循环队列
 std::condition_variable notFull; // 滑动窗口非满条件变量
 std::mutex winMutex;             // 滑动窗口锁
 Timer timer(TIMEOUT);            // 定时器，单位s，目前不是线程安全的
@@ -95,33 +95,37 @@ void recv_task()
             else
             {
                 std::lock_guard<std::mutex> lg(winMutex);
-                // 收到确认，如果确认号是滑动窗口第一个，则前推滑动窗口
+                // 收到确认，如果确认号比先前的位置大不过N，则前推滑动窗口（累积确认）
                 auto lastBase = base;
-                base = (pktBuf.seqnum + 1) % NUM_SEQNUM;
                 rdt_t *abandoned = nullptr;
                 bool b = true;
-                if (base == (lastBase + 1) % NUM_SEQNUM)
+                auto dist = (pktBuf.seqnum - lastBase + NUM_SEQNUM) % NUM_SEQNUM;
+                if (dist > 0 && dist <= N)
                 {
-                    LOG(printf("ACK %u\n", pktBuf.seqnum))
-                    b = sndpkt.pop(abandoned);
-                    if (abandoned != nullptr)
+                    base = pktBuf.seqnum;
+                    LOG(printf("ACK [%u, %u)\n", lastBase, pktBuf.seqnum))
+                    for (auto i = 0; i < dist; i++)
                     {
-                        delete abandoned;
-                        abandoned = nullptr;
+                        sendWin.pop(abandoned);
+                        if (abandoned != nullptr)
+                        {
+                            delete abandoned;
+                            abandoned = nullptr;
+                        }
                     }
                 }
                 else
                 {
-                    LOG(printf("DUP ACK %u\n"))
+                    LOG(printf("DUP ACK %u\n", pktBuf.seqnum))
                 }
                 LOG(
                     assert(b);
                     auto size = (nextseqnum - base + NUM_SEQNUM) % NUM_SEQNUM;
-                    if (size != sndpkt.size()) {
-                        printf("recv_task: size: %u, sndpkt.size(): %u\n", size, sndpkt.size());
+                    if (size != sendWin.size()) {
+                        printf("recv_task: size: %u, sendWin.size(): %u\n", size, sendWin.size());
                     })
                 notFull.notify_all();
-                if (sndpkt.empty())
+                if (sendWin.empty())
                 {
                     timer.stop();
                 }
@@ -155,19 +159,15 @@ void resend_task()
             std::lock_guard<std::mutex> lg(winMutex);
             // 在超时范围内，队列没有被清空
             LOG(
-                printf("timeout: resend size %d\n", sndpkt.size());
+                printf("timeout: resend seq %u\n", base);
                 auto size = (nextseqnum - base + NUM_SEQNUM) % NUM_SEQNUM;
-                if (size != sndpkt.size()) {
-                    printf("resend_task: size: %u, sndpkt.size(): %u\n", size, sndpkt.size());
+                if (size != sendWin.size()) {
+                    printf("resend_task: size: %u, sendWin.size(): %u\n", size, sendWin.size());
                 })
-            rdt_t *next;
-            sndpkt.rewind();
-            while (sndpkt.hasNext())
-            {
-                sndpkt.getNext(next);
-                LOG(assert(next != nullptr))
-                sendto(senderSocket, (char *)next, sizeof(rdt_t), 0, (SOCKADDR *)&recverAddr, sizeof(SOCKADDR));
-            }
+            // 只重传一个
+            rdt_t *first;
+            sendWin.top(first);
+            sendto(senderSocket, (char *)first, sizeof(rdt_t), 0, (SOCKADDR *)&recverAddr, sizeof(SOCKADDR));
             timer.rewind();
         }
     }
@@ -179,37 +179,37 @@ void rdt_send(char *data, uint16_t dataLen, uint8_t flag = 0)
     std::unique_lock<std::mutex> ul(winMutex);
     while (true)
     {
-        if (!sndpkt.full())
+        if (!sendWin.full())
         {
             LOG(
                 auto size = (nextseqnum - base + NUM_SEQNUM) % NUM_SEQNUM;
-                if (size != sndpkt.size()) {
-                    printf("rdt_send: size: %u, sndpkt.size(): %u\n", size, sndpkt.size());
+                if (size != sendWin.size()) {
+                    printf("rdt_send: size: %u, sendWin.size(): %u\n", size, sendWin.size());
                 })
             rdt_t *pktBuf = new rdt_t();
+            rdt_t *abandoned = nullptr;
             make_pkt(pktBuf, flag, nextseqnum, (uint8_t *)data, dataLen);
             auto index = (nextseqnum - base + NUM_SEQNUM) % NUM_SEQNUM;
             auto b = false;
-            if (index == sndpkt.size())
+            if (index == sendWin.size())
             {
-                b = sndpkt.enqueue(pktBuf);
+                b = sendWin.enqueue(pktBuf);
                 LOG(assert(b))
             }
-            else if (index < sndpkt.size())
+            else if (index < sendWin.size())
             {
-                rdt_t *abandoned;
-                b = sndpkt.index(index, abandoned);
-                LOG(assert(b))
-                delete abandoned;
-                abandoned = nullptr;
-                sndpkt.replace(index, pktBuf);
+                abandoned = pktBuf;
             }
             sendto(senderSocket, (char *)pktBuf, sizeof(rdt_t), 0, (SOCKADDR *)&recverAddr, sizeof(SOCKADDR));
+            if (abandoned != nullptr)
+            {
+                delete abandoned;
+            }
             if (base == nextseqnum)
             {
                 // 队列中第一个待发送的包！
                 timer.rewind();
-                sndpkt.rewind();
+                sendWin.rewind();
             }
             nextseqnum = (nextseqnum + 1) % NUM_SEQNUM;
             break;
