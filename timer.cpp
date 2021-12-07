@@ -1,13 +1,16 @@
 #include "./include/timer.hpp"
 #include <stdio.h>
 
-void Timer::rewind() { 
+void Timer::rewind()
+{
     running = true;
     start = std::chrono::system_clock::now();
 }
 
-bool Timer::check() {
-    if (!running) {
+bool Timer::check()
+{
+    if (!running)
+    {
         return true;
     }
     auto end = std::chrono::system_clock::now();
@@ -15,6 +18,7 @@ bool Timer::check() {
     return diff.count() < upper;
 }
 
-void Timer::stop() {
+void Timer::stop()
+{
     running = false;
 }

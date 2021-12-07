@@ -1,6 +1,16 @@
 #ifndef PROTOCOL_HPP
 #define PROTOCOL_HPP
 
+/**
+ * @file rdt.hpp
+ * @author zqs
+ * @brief 协议数据结构及相关方法
+ * @version 0.1
+ * @date 2021-12-07
+ * 
+ * @copyright Copyright (c) 2021
+ * 
+ */
 #include <stdint.h>
 
 #define DATA_SIZE 10231
@@ -13,7 +23,7 @@
 struct rdt_t
 {
     uint16_t sum = 0;           // 校验和
-    uint8_t flag = 0;           // 标志位 0x1表示ACK
+    uint8_t flag = 0;           // 标志位
     uint32_t seqnum = 0;        // 序列号
     uint16_t dataLen = 0;       // 数据长度
     uint8_t data[DATA_SIZE] = {0}; // 数据
