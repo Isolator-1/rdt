@@ -16,6 +16,7 @@
 #include <fstream>
 #include <chrono>
 #include <thread>
+#include <condition_variable>
 #include <atomic>
 #include "./include/timer.hpp"
 #include "./include/rdt.hpp"
@@ -26,17 +27,56 @@
 #pragma comment(lib, "ws2_32.lib")
 
 // #define DELAY         // 使用延时ACK
-#define ACK_DELAY 30  // 延时发送的ACK的延时，单位ms
-#define TNUM 4        // 线程数
+#define ACK_DELAY 30 // 延时发送的ACK的延时，单位ms
+#define TNUM 4       // 线程数
 
 WSADATA WSAData;
 SOCKET recverSocket;
 SOCKADDR_IN senderAddr;
-CircleQueue<rdt_t *> recvWin(N);
-ThreadPool TP(TNUM);           // 线程池
-std::atomic_bool delays[TNUM]; // 终止发送信号
-uint8_t lastD;                 // 上一个delay线程的终止信号序号
-bool readyClose = false;       // 置位时说明收到了FIN，即滑动窗口不会再滑动
+
+CircleQueue<rdt_t *> recvBuf(RECV_BUF); // 接收缓冲
+std::condition_variable notEmpty;
+std::condition_variable notFull;
+std::mutex bufLock;
+
+CircleQueue<rdt_t *> recvWin(N); // 接收滑动窗口
+ThreadPool TP(TNUM);             // 线程池
+std::atomic_bool delays[TNUM];   // 终止发送信号
+uint8_t lastD;                   // 上一个delay线程的终止信号序号
+bool readyClose = false;         // 置位时说明收到了FIN，即滑动窗口不会再滑动
+
+/**
+ * @brief 接收线程任务
+ *
+ */
+void recv_task()
+{
+    printf("recv_task begin\n");
+    int len = sizeof(SOCKADDR);
+    char tmp[sizeof(rdt_t)];
+    int result = 1;
+    while (result > 0)
+    {
+        result = recvfrom(recverSocket, tmp, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, &len);
+        rdt_t *buf = new rdt_t();
+        memcpy_s(buf, sizeof(rdt_t), tmp, sizeof(rdt_t));
+        {
+            std::unique_lock<std::mutex> ul(bufLock);
+            notFull.wait(ul, []
+                         { return !recvBuf.full(); });
+            auto b = recvBuf.enqueue(buf);
+            LOG(assert(b))
+            notEmpty.notify_one();
+        }
+    }
+    int e = 0;
+    if (result < 0)
+    {
+        e = WSAGetLastError();
+    }
+    printf("recv_task finished (%d)\n", e);
+}
+
 /**
  * @brief 延迟发送ACK线程任务
  * @param num ACK序号
@@ -50,9 +90,9 @@ void delay_ack(uint32_t num, uint8_t dnum)
     {
         return;
     }
-    rdt_t sendBuf;
-    make_pkt(&sendBuf, ACK_FLAG, num, 0, 0);
-    sendto(recverSocket, (char *)&sendBuf, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
+    rdt_t sendPkt;
+    make_pkt(&sendPkt, ACK_FLAG, num, 0, 0);
+    sendto(recverSocket, (char *)&sendPkt, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
 }
 
 int main(int argc, char **argv)
@@ -62,8 +102,8 @@ int main(int argc, char **argv)
     {
         recvWin.enqueue(nullptr);
     }
-    rdt_t sendBuf; // 接收方发送的ACK包
-    rdt_t recvBuf; // 接收方接收的数据包
+    rdt_t sendPkt;            // 接收方发送的ACK包
+    rdt_t *recvPkt = nullptr; // 接收方接收的数据包
     SOCKADDR_IN recverAddr;
     uint32_t expectedseqnum = 0; // 期望的下一个包的序号
     char outpurfile[64] = "output/test.txt";
@@ -82,7 +122,7 @@ int main(int argc, char **argv)
         printf("outputfile: %s, recver port: %u, recver addr: %s\n",
                outpurfile, recverPort, recverAddrStr);
     }
-    make_pkt(&sendBuf, ACK_FLAG, expectedseqnum, 0, 0);
+    make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0);
     if (WSAStartup(MAKEWORD(2, 2), &WSAData) != 0)
     {
         printf("WSAStartup failure");
@@ -104,156 +144,155 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    int len = sizeof(SOCKADDR);
+    std::thread recvThread(recv_task);
+    recvThread.detach();
+
     std::ofstream fout(outpurfile, std::ios::binary);
     while (fout.is_open())
     {
-        int result = recvfrom(recverSocket, (char *)&recvBuf, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, &len);
-        if (result > 0)
+        delete recvPkt;
+        recvPkt = nullptr;
         {
-            bool b1 = not_corrupt(&recvBuf);
-            auto dist = (recvBuf.seqnum - expectedseqnum + NUM_SEQNUM) % NUM_SEQNUM;
-            bool b2 = dist >= 0 && dist < N;
-            if (b1 && b2)
+            std::unique_lock<std::mutex> ul(bufLock);
+            notEmpty.wait(ul, []
+                          { return !recvBuf.empty(); });
+            auto b = recvBuf.pop(recvPkt);
+            LOG(assert(b))
+            notFull.notify_one();
+        }
+        bool b1 = not_corrupt(recvPkt);
+        auto dist = (recvPkt->seqnum - expectedseqnum + NUM_SEQNUM) % NUM_SEQNUM;
+        bool b2 = dist >= 0 && dist < N;
+        if (b1 && b2)
+        {
+            if (isSyn(recvPkt))
             {
-                if (isSyn(&recvBuf))
+                LOG(printf("SYN\n"))
+                make_pkt(&sendPkt, ACK_FLAG | SYN_FLAG, 0, 0, 0);
+                sendto(recverSocket, (char *)&sendPkt, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
+                continue;
+            }
+            else
+            {
+                if (dist == 0)
                 {
-                    LOG(printf("SYN\n"))
-                    make_pkt(&sendBuf, ACK_FLAG | SYN_FLAG, 0, 0, 0);
-                    sendto(recverSocket, (char *)&sendBuf, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
-                    continue;
-                }
-                else
-                {
-                    if (dist == 0)
+                    // 更新expectedseqnum, 写入文件，窗口滑动右移，发送expectedseqnum为序号的ACK
+                    expectedseqnum = (expectedseqnum + 1) % NUM_SEQNUM;
+                    if (isFin(recvPkt))
                     {
-                        // 更新expectedseqnum, 写入文件，窗口滑动右移，发送expectedseqnum为序号的ACK
-                        expectedseqnum = (expectedseqnum + 1) % NUM_SEQNUM;
-                        if (isFin(&recvBuf))
+                        // 若下一的期望的正好是FIN包，则滑动窗口中不再有其他有效包
+                        LOG(
+                            printf("FIN %u\n", recvPkt->seqnum);
+                            rdt_t * tmp;
+                            for (uint32_t i = 0; i < recvWin.size(); i++) {
+                                recvWin.index(i, tmp);
+                                assert(tmp == nullptr);
+                            })
+                        make_pkt(&sendPkt, FIN_FLAG | ACK_FLAG, expectedseqnum, 0, 0);
+                        sendto(recverSocket, (char *)&sendPkt, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
+                        filesize = fout.tellp();
+                        fout.close();
+                        break;
+                    }
+                    LOG(printf("SEQ %u\n", recvPkt->seqnum))
+                    fout.write((char *)recvPkt->data, recvPkt->dataLen);
+                    recvWin.pop();
+                    recvWin.enqueue(nullptr);
+                    LOG(assert(recvWin.full()))
+                    rdt_t *writened = nullptr;
+                    uint32_t acc = 0;
+                    while (recvWin.top(writened))
+                    {
+                        if (writened == nullptr)
                         {
-                            // 若下一的期望的正好是FIN包，则滑动窗口中不再有其他有效包
+                            break;
+                        }
+                        recvWin.pop();
+                        bool end = false;
+                        if (isFin(writened))
+                        {
                             LOG(
-                                printf("FIN %u\n", recvBuf.seqnum);
+                                printf("FIN %u\n", writened->seqnum);
                                 rdt_t * tmp;
                                 for (uint32_t i = 0; i < recvWin.size(); i++) {
                                     recvWin.index(i, tmp);
                                     assert(tmp == nullptr);
                                 })
-                            make_pkt(&sendBuf, FIN_FLAG | ACK_FLAG, expectedseqnum, 0, 0);
-                            sendto(recverSocket, (char *)&sendBuf, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
                             filesize = fout.tellp();
                             fout.close();
+                            make_pkt(&sendPkt, FIN_FLAG | ACK_FLAG, expectedseqnum, 0, 0);
+                            sendto(recverSocket, (char *)&sendPkt, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
+                            end = true;
                             break;
                         }
-                        LOG(printf("SEQ %u\n", recvBuf.seqnum))
-                        fout.write((char *)recvBuf.data, recvBuf.dataLen);
-                        recvWin.pop();
+                        if (end)
+                            break;
+                        acc++;
+                        fout.write((char *)writened->data, writened->dataLen);
+                        delete writened;
+                        writened = nullptr;
+                    }
+                    expectedseqnum = (expectedseqnum + acc) % NUM_SEQNUM;
+                    for (auto i = 0; i < acc; i++)
+                    {
                         recvWin.enqueue(nullptr);
-                        LOG(assert(recvWin.full()))
-                        rdt_t *writened = nullptr;
-                        uint32_t acc = 0;
-                        while (recvWin.top(writened))
-                        {
-                            if (writened == nullptr)
-                            {
-                                break;
-                            }
-                            recvWin.pop();
-                            bool end = false;
-                            if (isFin(writened))
-                            {
-                                LOG(
-                                    printf("FIN %u\n", writened->seqnum);
-                                    rdt_t * tmp;
-                                    for (uint32_t i = 0; i < recvWin.size(); i++) {
-                                        recvWin.index(i, tmp);
-                                        assert(tmp == nullptr);
-                                    })
-                                filesize = fout.tellp();
-                                fout.close();
-                                make_pkt(&sendBuf, FIN_FLAG | ACK_FLAG, expectedseqnum, 0, 0);
-                                sendto(recverSocket, (char *)&sendBuf, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
-                                end = true;
-                                break;
-                            }
-                            if (end)
-                                break;
-                            acc++;
-                            fout.write((char *)writened->data, writened->dataLen);
-                            delete writened;
-                            writened = nullptr;
-                        }
-                        expectedseqnum = (expectedseqnum + acc) % NUM_SEQNUM;
-                        for (auto i = 0; i < acc; i++)
-                        {
-                            recvWin.enqueue(nullptr);
-                        }
-                        // LOG(assert(recvWin.full())) // 因为不清楚原因在调试过程中过不去，但不影响传输的正确性
+                    }
+                    // LOG(assert(recvWin.full())) // 因为不清楚原因在调试过程中过不去，但不影响传输的正确性
 #ifdef DELAY
-                        if (acc == 0)
-                        {
-                            // 发送延迟的ACK
-                            delays[lastD].store(true);
-                            TP.enqueue(delay_ack, expectedseqnum, lastD);
-                            lastD = (lastD + 1) % TNUM;
-                        }
-                        else
-                        {
-                            // 放弃延时ACK，立即发送累积ACK
-                            for (uint8_t i = 0; i < TNUM; i++)
-                            {
-                                delays[i].store(false);
-                            }
-                            make_pkt(&sendBuf, ACK_FLAG, expectedseqnum, 0, 0);
-                            sendto(recverSocket, (char *)&sendBuf, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
-                        }
-#else
-                        make_pkt(&sendBuf, ACK_FLAG, expectedseqnum, 0, 0);
-                        sendto(recverSocket, (char *)&sendBuf, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
-#endif
+                    if (acc == 0)
+                    {
+                        // 发送延迟的ACK
+                        delays[lastD].store(true);
+                        TP.enqueue(delay_ack, expectedseqnum, lastD);
+                        lastD = (lastD + 1) % TNUM;
                     }
                     else
                     {
-                        // 缓存到滑动窗口的dist位置
-                        LOG(printf("expected %u, cached %u into %u\n", expectedseqnum, recvBuf.seqnum, dist))
-                        bool b;
-                        rdt_t *origin;
-                        b = recvWin.index(dist, origin);
-                        LOG(assert(b))
-                        if (origin == nullptr)
+                        // 放弃延时ACK，立即发送累积ACK
+                        for (uint8_t i = 0; i < TNUM; i++)
                         {
-                            // 之前该位置没有缓存
-                            recvWin.replace(dist, new rdt_t(recvBuf));
+                            delays[i].store(false);
                         }
-                        make_pkt(&sendBuf, ACK_FLAG, expectedseqnum, 0, 0);
-                        sendto(recverSocket, (char *)&sendBuf, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
+                        make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0);
+                        sendto(recverSocket, (char *)&sendPkt, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
                     }
+#else
+                    make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0);
+                    sendto(recverSocket, (char *)&sendPkt, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
+#endif
+                }
+                else
+                {
+                    // 缓存到滑动窗口的dist位置
+                    LOG(printf("expected %u, cached %u into %u\n", expectedseqnum, recvPkt->seqnum, dist))
+                    bool b;
+                    rdt_t *origin;
+                    b = recvWin.index(dist, origin);
+                    LOG(assert(b))
+                    if (origin == nullptr)
+                    {
+                        // 之前该位置没有缓存
+                        recvWin.replace(dist, new rdt_t(*recvPkt));
+                    }
+                    make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0);
+                    sendto(recverSocket, (char *)&sendPkt, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
                 }
             }
-            else
-            {
-                if (!b1)
-                {
-                    LOG(printf("corrupt package\n"))
-                }
-                if (!b2)
-                {
-                    LOG(printf("abandon %d\n", recvBuf.seqnum))
-                }
-                sendto(recverSocket, (char *)&sendBuf, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
-            }
-        }
-        else if (result == 0)
-        {
-            printf("Connection end.\n");
-            break;
         }
         else
         {
-            printf("Receive failure %d\n", WSAGetLastError());
-            break;
+            if (!b1)
+            {
+                LOG(printf("corrupt package\n"))
+            }
+            if (!b2)
+            {
+                LOG(printf("abandon %d\n", recvPkt->seqnum))
+            }
+            sendto(recverSocket, (char *)&sendPkt, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
         }
     }
+
     printf("waiting to stop\n");
     TP.stop();
     printf("Finished. %u Bytes in total\n", filesize);

@@ -14,12 +14,56 @@
 #include <string.h>
 #include <iostream>
 #include <fstream>
+#include <thread>
+#include <condition_variable>
+#include <atomic>
 #include "./include/timer.hpp"
 #include "./include/rdt.hpp"
 #include "./include/def.hpp"
+#include "./include/circlequeue.tpp"
 
 #pragma comment(lib, "ws2_32.lib")
 
+WSADATA WSAData;
+SOCKET recverSocket;
+SOCKADDR_IN senderAddr;
+
+CircleQueue<rdt_t *> recvBuf(RECV_BUF); // 接收缓冲
+std::condition_variable notEmpty;
+std::condition_variable notFull;
+std::mutex bufLock;
+
+/**
+ * @brief 接收线程任务
+ *
+ */
+void recv_task()
+{
+    printf("recv_task begin\n");
+    int len = sizeof(SOCKADDR);
+    char tmp[sizeof(rdt_t)];
+    int result = 1;
+    while (result > 0)
+    {
+        result = recvfrom(recverSocket, tmp, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, &len);
+        rdt_t *buf = new rdt_t();
+        memcpy_s(buf, sizeof(rdt_t), tmp, sizeof(rdt_t));
+        {
+            std::unique_lock<std::mutex> ul(bufLock);
+            notFull.wait(ul, []
+                         { return !recvBuf.full(); });
+            auto b = recvBuf.enqueue(buf);
+            LOG(assert(b))
+            notEmpty.notify_one();
+        }
+    }
+    int e = 0;
+    if (result < 0)
+    {
+        e = WSAGetLastError();
+    }
+    printf("recv_task finished (%d)\n", e);
+}
 
 int main(int argc, char **argv)
 {
@@ -40,17 +84,16 @@ int main(int argc, char **argv)
                outpurfile, recverPort, recverAddrStr);
     }
 
-    WSADATA WSAData;
     uint32_t expectedseqnum = 0;
-    rdt_t sendBuf; // 接收方发送的ACK包
-    rdt_t recvBuf; // 接收方接收的数据包
-    make_pkt(&sendBuf, ACK_FLAG, expectedseqnum, 0, 0);
+    rdt_t sendPkt;  // 接收方发送的ACK包
+    rdt_t *recvPkt = nullptr; // 接收方接收的数据包
+    make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0);
     if (WSAStartup(MAKEWORD(2, 2), &WSAData) != 0)
     {
         printf("WSAStartup failure");
         exit(1);
     }
-    SOCKET recverSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    recverSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (recverSocket == INVALID_SOCKET)
     {
         printf("socket failure\n");
@@ -65,68 +108,67 @@ int main(int argc, char **argv)
         printf("bind failure %d\n", WSAGetLastError());
         return 0;
     }
-    SOCKADDR_IN senderAddr;
+
+    std::thread recvThread(recv_task);
+    recvThread.detach();
+
     int len = sizeof(SOCKADDR);
     std::ofstream fout(outpurfile, std::ios::binary);
     while (fout.is_open())
     {
-        int result = recvfrom(recverSocket, (char *)&recvBuf, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, &len);
-        if (result > 0)
+        delete recvPkt;
+        recvPkt = nullptr;
         {
-            bool b1 = not_corrupt(&recvBuf);
-            bool b2 = recvBuf.seqnum == expectedseqnum;
-            if (b1 && b2)
+            std::unique_lock<std::mutex> ul(bufLock);
+            notEmpty.wait(ul, []
+                          { return !recvBuf.empty(); });
+            auto b = recvBuf.pop(recvPkt);
+            LOG(assert(b))
+            notFull.notify_one();
+        }
+        bool b1 = not_corrupt(recvPkt);
+        bool b2 = recvPkt->seqnum == expectedseqnum;
+        if (b1 && b2)
+        {
+            LOG(printf("SEQ %d\n", recvPkt->seqnum))
+            if (isFin(recvPkt))
             {
-                LOG(printf("SEQ %d\n", recvBuf.seqnum))
-                if (isFin(&recvBuf))
-                {
-                    LOG(printf("FIN\n"))
-                    filesize = fout.tellp();
-                    fout.close();
-                    make_pkt(&sendBuf, ACK_FLAG | FIN_FLAG, expectedseqnum, 0, 0);
-                    sendto(recverSocket, (char *)&sendBuf, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
-                    break;
-                }
-                else if (isSyn(&recvBuf))
-                {
-                    LOG(printf("SYN\n"))
-                    make_pkt(&sendBuf, ACK_FLAG | SYN_FLAG, 0, 0, 0);
-                    sendto(recverSocket, (char *)&sendBuf, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
-                    continue;
-                }
-                else
-                {
-                    if (fout.is_open())
-                    {
-                        fout.write((char *)recvBuf.data, recvBuf.dataLen);
-                    }
-                }
-                make_pkt(&sendBuf, ACK_FLAG, expectedseqnum, 0, 0);
-                sendto(recverSocket, (char *)&sendBuf, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
-                expectedseqnum = (expectedseqnum + 1) % NUM_SEQNUM;
+                LOG(printf("FIN\n"))
+                filesize = fout.tellp();
+                fout.close();
+                make_pkt(&sendPkt, ACK_FLAG | FIN_FLAG, expectedseqnum, 0, 0);
+                sendto(recverSocket, (char *)&sendPkt, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
+                break;
+            }
+            else if (isSyn(recvPkt))
+            {
+                LOG(printf("SYN\n"))
+                make_pkt(&sendPkt, ACK_FLAG | SYN_FLAG, 0, 0, 0);
+                sendto(recverSocket, (char *)&sendPkt, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
+                continue;
             }
             else
             {
-                if (!b1)
+                if (fout.is_open())
                 {
-                    LOG(printf("corrupt package\n"))
+                    fout.write((char *)recvPkt->data, recvPkt->dataLen);
                 }
-                if (!b2)
-                {
-                    LOG(printf("expect %d but receive %d\n", expectedseqnum, recvBuf.seqnum))
-                }
-                sendto(recverSocket, (char *)&sendBuf, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
             }
-        }
-        else if (result == 0)
-        {
-            printf("Connection end.\n");
-            break;
+            make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0);
+            sendto(recverSocket, (char *)&sendPkt, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
+            expectedseqnum = (expectedseqnum + 1) % NUM_SEQNUM;
         }
         else
         {
-            printf("Receive failure %d\n", WSAGetLastError());
-            break;
+            if (!b1)
+            {
+                LOG(printf("corrupt package\n"))
+            }
+            if (!b2)
+            {
+                LOG(printf("expect %d but receive %d\n", expectedseqnum, recvPkt->seqnum))
+            }
+            sendto(recverSocket, (char *)&sendPkt, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
         }
     }
     closesocket(recverSocket);
