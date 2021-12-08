@@ -58,7 +58,7 @@ void recv_task()
         }
     }
     int e = 0;
-    if (result < 0)
+    if (result == SOCKET_ERROR)
     {
         e = WSAGetLastError();
     }

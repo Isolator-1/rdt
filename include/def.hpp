@@ -16,10 +16,10 @@
 #define RECVER_PORT 9999
 #define DEFAULT_ADDR "127.0.0.1"
 #define N 16                     // 滑动窗口大小
-#define NUM_SEQNUM 32           // 序列号数目
+#define NUM_SEQNUM 32           // 序列号数目 至少为2N
 #define RECV_BUF 32             // 接受缓冲区大小，单位（个数据包）
 
-#define TIMEOUT 0.1 // 超时时间, 单位s
+#define TIMEOUT 0.1 // 发送方超时时间, 单位s
 #define INTERVAL 50 // 检查定时器时间间隔，单位ms
 
 #define LOG         // 是否打印日志，进行assert检查

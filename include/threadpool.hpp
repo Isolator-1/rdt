@@ -112,6 +112,13 @@ public:
         }
     }
 
+    
+    uint32_t active(){
+        // std::lock_guard<std::mutex> lock_guard(mutex);
+        return active_threads;
+    }
+
+
     template <typename Func,
         typename... Args,
         typename Rtrn = typename std::result_of<Func(Args...)>::type>

@@ -41,54 +41,88 @@ SOCKADDR_IN recverAddr;
 uint32_t base = 0;
 uint32_t nextseqnum = 0;
 CircleQueue<rdt_t *> sendWin(N); // 保存已发送但是待确认数据包的循环队列
-std::condition_variable notFull; // 滑动窗口非满条件变量
+std::condition_variable winNotFull; // 滑动窗口非满条件变量
 std::mutex winMutex;             // 滑动窗口锁
 Timer timer(TIMEOUT);            // 定时器，单位s，目前不是线程安全的
 std::atomic_bool isConnect;      // 已连接
 
+CircleQueue<rdt_t *> recvBuf(RECV_BUF); // 接收缓冲
+std::condition_variable notFull;
+std::condition_variable notEmpty;
+std::mutex bufLock;
+
+
+/**
+ * @brief 接收线程任务
+ *
+ */
 void recv_task()
 {
-    printf("recv_task enter!\n");
+    printf("recv_task begin\n");
+    int len = sizeof(SOCKADDR);
+    char tmp[sizeof(rdt_t)];
+    int result = 1;
+    while (result > 0)
+    {
+        result = recvfrom(senderSocket, tmp, sizeof(rdt_t), 0, (SOCKADDR *)&recverAddr, &len);
+        rdt_t *buf = new rdt_t();
+        memcpy_s(buf, sizeof(rdt_t), tmp, sizeof(rdt_t));
+        {
+            std::unique_lock<std::mutex> ul(bufLock);
+            notFull.wait(ul, []
+                         { return !recvBuf.full(); });
+            auto b = recvBuf.enqueue(buf);
+            LOG(assert(b))
+            notEmpty.notify_one();
+        }
+    }
+    int e = 0;
+    if (result == SOCKET_ERROR)
+    {
+        e = WSAGetLastError();
+    }
+    printf("recv_task finished (%d)\n", e);
+}
+
+/**
+ * @brief 解析线程任务
+ * 
+ */
+void parse_task()
+{
+    printf("parse_task enter!\n");
     SOCKADDR_IN sock;
     int len = sizeof(sock);
     int result;
-    rdt_t pktBuf;
+    rdt_t* recvPkt = nullptr;
     while (true)
     {
-        result = recvfrom(senderSocket, (char *)&pktBuf, sizeof(rdt_t), 0, (SOCKADDR *)&sock, &len);
-        if (result == SOCKET_ERROR)
+        delete recvPkt;
+        recvPkt = nullptr;
         {
-            int e = WSAGetLastError();
-            if (e == 10054)
-            {
-                // 未发现远程主机错误，出现该错误通常是因为先启动发送方，后启动接收方，因此不因为该错误结束接收线程
-                printf("Cannot find recver\n");
-                continue;
-            }
-            printf("Receive error %d\n", e);
-            break;
+            std::unique_lock<std::mutex> ul(bufLock);
+            notEmpty.wait(ul, []
+                          { return !recvBuf.empty(); });
+            auto b = recvBuf.pop(recvPkt);
+            LOG(assert(b))
+            notFull.notify_one();
         }
-        if (result == 0)
-        {
-            printf("The connection is closed\n");
-            break;
-        }
-        if (!not_corrupt(&pktBuf))
+        if (!not_corrupt(recvPkt))
         {
             printf("corrupt package %u\n");
             continue;
         }
-        if (isAck(&pktBuf))
+        if (isAck(recvPkt))
         {
-            if (isFin(&pktBuf))
+            if (isFin(recvPkt))
             {
-                LOG(printf("FIN ACK %u\n", pktBuf.seqnum))
+                LOG(printf("FIN ACK %u\n", recvPkt->seqnum))
                 sendEnd = system_clock::now();
                 break;
             }
-            else if (isSyn(&pktBuf))
+            else if (isSyn(recvPkt))
             {
-                LOG(printf("SYN ACK %u\n", pktBuf.seqnum))
+                LOG(printf("SYN ACK %u\n", recvPkt->seqnum))
                 isConnect.store(true);
                 continue;
             }
@@ -99,11 +133,11 @@ void recv_task()
                 auto lastBase = base;
                 rdt_t *abandoned = nullptr;
                 bool b = true;
-                auto dist = (pktBuf.seqnum - lastBase + NUM_SEQNUM) % NUM_SEQNUM;
+                auto dist = (recvPkt->seqnum - lastBase + NUM_SEQNUM) % NUM_SEQNUM;
                 if (dist > 0 && dist <= N)
                 {
-                    base = pktBuf.seqnum;
-                    LOG(printf("ACK [%u, %u)\n", lastBase, pktBuf.seqnum))
+                    base = recvPkt->seqnum;
+                    LOG(printf("ACK [%u, %u)\n", lastBase, recvPkt->seqnum))
                     for (auto i = 0; i < dist; i++)
                     {
                         sendWin.pop(abandoned);
@@ -116,7 +150,7 @@ void recv_task()
                 }
                 else
                 {
-                    LOG(printf("DUP ACK %u\n", pktBuf.seqnum))
+                    LOG(printf("DUP ACK %u\n", recvPkt->seqnum))
                 }
                 LOG(
                     assert(b);
@@ -124,7 +158,7 @@ void recv_task()
                     if (size != sendWin.size()) {
                         printf("recv_task: size: %u, sendWin.size(): %u\n", size, sendWin.size());
                     })
-                notFull.notify_all();
+                winNotFull.notify_all();
                 if (sendWin.empty())
                 {
                     timer.stop();
@@ -141,8 +175,11 @@ void recv_task()
             exit(1);
         }
     }
-    printf("recv_task quit!\n");
+    delete recvPkt;
+    recvPkt = nullptr;
+    printf("parse_task quit!\n");
 }
+
 
 void resend_task()
 {
@@ -186,25 +223,23 @@ void rdt_send(char *data, uint16_t dataLen, uint8_t flag = 0)
                 if (size != sendWin.size()) {
                     printf("rdt_send: size: %u, sendWin.size(): %u\n", size, sendWin.size());
                 })
-            rdt_t *pktBuf = new rdt_t();
+            rdt_t *sendPkt = new rdt_t();
             rdt_t *abandoned = nullptr;
-            make_pkt(pktBuf, flag, nextseqnum, (uint8_t *)data, dataLen);
+            make_pkt(sendPkt, flag, nextseqnum, (uint8_t *)data, dataLen);
             auto index = (nextseqnum - base + NUM_SEQNUM) % NUM_SEQNUM;
             auto b = false;
             if (index == sendWin.size())
             {
-                b = sendWin.enqueue(pktBuf);
+                b = sendWin.enqueue(sendPkt);
                 LOG(assert(b))
             }
             else if (index < sendWin.size())
             {
-                abandoned = pktBuf;
+                abandoned = sendPkt;
             }
-            sendto(senderSocket, (char *)pktBuf, sizeof(rdt_t), 0, (SOCKADDR *)&recverAddr, sizeof(SOCKADDR));
-            if (abandoned != nullptr)
-            {
-                delete abandoned;
-            }
+            sendto(senderSocket, (char *)sendPkt, sizeof(rdt_t), 0, (SOCKADDR *)&recverAddr, sizeof(SOCKADDR));
+            delete abandoned;
+            abandoned = nullptr;
             if (base == nextseqnum)
             {
                 // 队列中第一个待发送的包！
@@ -217,7 +252,7 @@ void rdt_send(char *data, uint16_t dataLen, uint8_t flag = 0)
         else
         {
             // refuse data
-            notFull.wait(ul); // 阻塞，并释放锁
+            winNotFull.wait(ul); // 阻塞，并释放锁
         }
     }
 }
@@ -292,10 +327,14 @@ int main(int argc, char **argv)
         return -1;
     }
 
-    // 启动计时线程和接收线程
+    // 启动计时线程，接收线程，解析线程
     isConnect.store(false);
     std::thread timerThread(resend_task);
     std::thread recvThread(recv_task);
+    std::thread parseThread(parse_task);
+
+    timerThread.detach();
+    recvThread.detach();
 
     // 发送连接请求
     printf("waiting to connect...\n");
@@ -316,11 +355,12 @@ int main(int argc, char **argv)
     }
     fin.close();
 
-    timerThread.detach();
+
     // 断开连接
     printf("waiting to disconnect...\n");
     rdt_send(0, 0, FIN_FLAG);
-    recvThread.join();
+    parseThread.join();
+
     auto duration = duration_cast<microseconds>(sendEnd - sendBegin);
     double costTime = duration.count() / 1000.0;
     double throughput = (filesize * 8) / (costTime / 1000) / 1e6;
