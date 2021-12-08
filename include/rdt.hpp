@@ -13,7 +13,7 @@
  */
 #include <stdint.h>
 
-#define DATA_SIZE 10231
+#define DATA_SIZE 10228
 #define ACK_FLAG 0x1
 #define FIN_FLAG 0x2
 #define SYN_FLAG 0x4
@@ -23,8 +23,9 @@
 struct rdt_t
 {
     uint16_t sum = 0;           // 校验和
-    uint8_t flag = 0;           // 标志位
+    uint16_t flag = 0;          // 标志位
     uint32_t seqnum = 0;        // 序列号
+    uint16_t rwnd = 0;          // 缓冲区剩余，单位：个数据包
     uint16_t dataLen = 0;       // 数据长度
     uint8_t data[DATA_SIZE] = {0}; // 数据
 };
@@ -39,7 +40,7 @@ void rollback(uint32_t& sum);
 /**
  * 打包数据包
  **/
-void make_pkt(rdt_t* pktBuf, uint8_t flag, uint32_t seqnum, uint8_t* data, uint16_t dataLen);
+void make_pkt(rdt_t* pktBuf, uint16_t flag, uint32_t seqnum, uint8_t* data, uint16_t dataLen, uint16_t rwnd=0);
 
 /**
  * 使用校验和检查

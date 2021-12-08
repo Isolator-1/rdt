@@ -24,8 +24,9 @@ public:
      * @param _upper 时间上限，单位s
      */
     Timer(double _upper): upper(_upper), running(false){}
+
     /**
-     * @brief 从当前时间开始计时
+     * @brief 重置并开始
      * 
      */
     void rewind();
@@ -36,7 +37,19 @@ public:
      * @return false 超时
      */
     bool check();
+
+    /**
+     * @brief 暂停
+     * 
+     */
     void stop();
+
+    /**
+     * @brief 继续
+     * 
+     */
+    void conti() {running = true;}
+
 };
 
 #endif
