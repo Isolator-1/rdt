@@ -26,21 +26,53 @@
 
 #pragma comment(lib, "ws2_32.lib")
 
-#define DELAY         // 使用延时ACK
+#define DELAY        // 使用延时ACK
 #define ACK_DELAY 30 // 延时发送的ACK的延时，单位ms
+
 
 WSADATA WSAData;
 SOCKET recverSocket;
 SOCKADDR_IN senderAddr;
 
-CircleQueue<rdt_t *> recvBuf(RECV_BUF); // 接收缓冲
+CircleQueue<rdt_t *> recvBuf(RECVER_RECV_BUF); // 接收缓冲
 std::condition_variable notEmpty;
-std::condition_variable winNotFull;
+std::condition_variable notFull;
 std::mutex bufLock;
 
 CircleQueue<rdt_t *> recvWin(N); // 接收滑动窗口
 ThreadPool TP(1);                // 用于延迟ACK的线程池
 std::atomic_bool cancleDelay;
+
+
+// uint16_t holesInWin = RECVER_RECV_BUF; // TODO: 某种原因没有维护好，负溢
+
+// /**
+//  * @brief 获得滑动窗口中的空洞数，时间复杂度O(N)，如果维护一个空洞数变量会更快一些
+//  * 注意recvWin的大小并不总是保持在N，因此需要num递减
+//  *
+//  * @return 滑动窗口中的空洞数
+//  */
+// uint16_t holes_in_win()
+// {
+//     uint16_t num = RECVER_RECV_BUF;
+//     rdt_t *tmp;
+//     recvWin.rewind();
+//     while (recvWin.hasNext())
+//     {
+//         recvWin.getNext(tmp);
+//         if (tmp != nullptr)
+//         {
+//             num--;
+//         }
+//     }
+//     LOG(
+//         assert(num >= 0);
+//         assert(num <= RECVER_RECV_BUF))
+//     return num;
+//     // return holesInWin;
+// }
+
+
 
 /**
  * @brief 接收线程任务
@@ -59,7 +91,7 @@ void recv_task()
         memcpy_s(buf, sizeof(rdt_t), tmp, sizeof(rdt_t));
         {
             std::unique_lock<std::mutex> ul(bufLock);
-            winNotFull.wait(ul, []
+            notFull.wait(ul, []
                          { return !recvBuf.full(); });
             auto b = recvBuf.enqueue(buf);
             LOG(assert(b))
@@ -82,9 +114,20 @@ void delay_ack(uint32_t num)
 {
     using namespace std::chrono;
     std::this_thread::sleep_for(milliseconds(ACK_DELAY));
-    if(cancleDelay) return;
+    if (cancleDelay)
+        return;
     rdt_t sendPkt;
+    uint16_t rwnd = 0;
+    // {
+    //     std::lock_guard<std::mutex> lg(bufLock);
+    //     rwnd = recvWin.size();
+    // }
+    rwnd = recvWin.size();
+#ifdef FLOW_CONTROL
+    make_pkt(&sendPkt, ACK_FLAG, num, 0, 0, RECVER_RECV_BUF - recvBuf.size());
+#else
     make_pkt(&sendPkt, ACK_FLAG, num, 0, 0);
+#endif
     sendto(recverSocket, (char *)&sendPkt, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
     LOG(printf("delay ACK%u\n", num);)
 }
@@ -116,7 +159,11 @@ int main(int argc, char **argv)
         printf("outputfile: %s, recver port: %u, recver addr: %s\n",
                outpurfile, recverPort, recverAddrStr);
     }
+#ifdef FLOW_CONTROL
+    make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0, RECVER_RECV_BUF - recvBuf.size());
+#else
     make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0);
+#endif
     if (WSAStartup(MAKEWORD(2, 2), &WSAData) != 0)
     {
         printf("WSAStartup failure");
@@ -152,7 +199,7 @@ int main(int argc, char **argv)
                           { return !recvBuf.empty(); });
             auto b = recvBuf.pop(recvPkt);
             LOG(assert(b))
-            winNotFull.notify_one();
+            notFull.notify_one();
         }
         bool b1 = not_corrupt(recvPkt);
         auto dist = (recvPkt->seqnum - expectedseqnum + NUM_SEQNUM) % NUM_SEQNUM;
@@ -162,7 +209,11 @@ int main(int argc, char **argv)
             if (isSyn(recvPkt))
             {
                 LOG(printf("SYN\n"))
+#ifdef FLOW_CONTROL
+                make_pkt(&sendPkt, ACK_FLAG | SYN_FLAG, 0, 0, 0, RECVER_RECV_BUF - recvBuf.size());
+#else
                 make_pkt(&sendPkt, ACK_FLAG | SYN_FLAG, 0, 0, 0);
+#endif
                 sendto(recverSocket, (char *)&sendPkt, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
                 continue;
             }
@@ -170,8 +221,9 @@ int main(int argc, char **argv)
             {
                 if (dist == 0)
                 {
-                    // 所具有期望序号的按序报文段到达
+                    // 所具有期望序号的按序报文段到达，逻辑上是填入缓冲区的0位置再弹出，实际上就不填了
                     expectedseqnum = (expectedseqnum + 1) % NUM_SEQNUM;
+                    // holesInWin--;
                     if (isFin(recvPkt))
                     {
                         // 若下一的期望的正好是FIN包，则滑动窗口中不再有其他有效包
@@ -182,7 +234,11 @@ int main(int argc, char **argv)
                                 recvWin.index(i, tmp);
                                 assert(tmp == nullptr);
                             })
+#ifdef FLOW_CONTROL
+                        make_pkt(&sendPkt, FIN_FLAG | ACK_FLAG, expectedseqnum, 0, 0, RECVER_RECV_BUF - recvBuf.size());
+#else
                         make_pkt(&sendPkt, FIN_FLAG | ACK_FLAG, expectedseqnum, 0, 0);
+#endif
                         sendto(recverSocket, (char *)&sendPkt, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
                         filesize = fout.tellp();
                         fout.close();
@@ -192,6 +248,7 @@ int main(int argc, char **argv)
                     fout.write((char *)recvPkt->data, recvPkt->dataLen);
                     recvWin.pop();
                     recvWin.enqueue(nullptr);
+                    // holesInWin++;
                     LOG(assert(recvWin.full()))
                     rdt_t *writened = nullptr;
                     uint32_t acc = 0; // 滑动窗口中连续缓存的个数
@@ -202,6 +259,7 @@ int main(int argc, char **argv)
                             break;
                         }
                         recvWin.pop();
+                        // holesInWin++;
                         bool end = false;
                         if (isFin(writened))
                         {
@@ -212,7 +270,11 @@ int main(int argc, char **argv)
                                     recvWin.index(i, tmp);
                                     assert(tmp == nullptr);
                                 })
+#ifdef FLOW_CONTROL
+                            make_pkt(&sendPkt, FIN_FLAG | ACK_FLAG, expectedseqnum, 0, 0, RECVER_RECV_BUF - recvBuf.size());
+#else
                             make_pkt(&sendPkt, FIN_FLAG | ACK_FLAG, expectedseqnum, 0, 0);
+#endif
                             sendto(recverSocket, (char *)&sendPkt, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
                             filesize = fout.tellp();
                             fout.close();
@@ -245,11 +307,19 @@ int main(int argc, char **argv)
                         // 可以从第一个开始连续
                         // 立即发送累积ACK
                         cancleDelay.store(true);
+#ifdef FLOW_CONTROL
+                        make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0, RECVER_RECV_BUF - recvBuf.size());
+#else
                         make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0);
+#endif
                         sendto(recverSocket, (char *)&sendPkt, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
                     }
 #else
-                    make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0);
+#ifdef FLOW_CONTROL
+                    make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0, RECVER_RECV_BUF - recvBuf.size());
+#else
+                    make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0)
+#endif
                     sendto(recverSocket, (char *)&sendPkt, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
 #endif
                 }
@@ -265,8 +335,13 @@ int main(int argc, char **argv)
                     {
                         // 之前该位置没有缓存
                         recvWin.replace(dist, new rdt_t(*recvPkt));
+                        // holesInWin--;
                     }
+#ifdef FLOW_CONTROL
+                    make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0, RECVER_RECV_BUF - recvBuf.size());
+#else
                     make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0);
+#endif
                     sendto(recverSocket, (char *)&sendPkt, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
                 }
             }

@@ -28,7 +28,7 @@ WSADATA WSAData;
 SOCKET recverSocket;
 SOCKADDR_IN senderAddr;
 
-CircleQueue<rdt_t *> recvBuf(RECV_BUF); // 接收缓冲
+CircleQueue<rdt_t *> recvBuf(RECVER_RECV_BUF); // 接收缓冲
 std::condition_variable notEmpty;
 std::condition_variable notFull;
 std::mutex bufLock;

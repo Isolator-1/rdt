@@ -12,13 +12,14 @@ void rollback(uint32_t &sum)
     }
 }
 
-void make_pkt(rdt_t *pktBuf, uint8_t flag, uint32_t seqnum, uint8_t *data, uint16_t dataLen)
+void make_pkt(rdt_t *pktBuf, uint16_t flag, uint32_t seqnum, uint8_t *data, uint16_t dataLen, uint16_t rwnd)
 {
     assert(dataLen <= DATA_SIZE);
     pktBuf->sum = 0;
     pktBuf->flag = flag;
     pktBuf->seqnum = seqnum;
     pktBuf->dataLen = dataLen;
+    pktBuf->rwnd = rwnd;
     memcpy_s(pktBuf->data, DATA_SIZE, data, dataLen);
     uint16_t validLen = sizeof(rdt_t) - DATA_SIZE + dataLen;
     uint16_t i = 0;

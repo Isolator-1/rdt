@@ -29,7 +29,6 @@
 
 #pragma comment(lib, "ws2_32.lib")
 
-
 using namespace std::chrono;
 system_clock::time_point sendBegin;
 system_clock::time_point sendEnd;
@@ -41,16 +40,17 @@ SOCKADDR_IN recverAddr;
 uint32_t base = 0;
 uint32_t nextseqnum = 0;
 CircleQueue<rdt_t *> sendWin(N); // 保存已发送但是待确认数据包的循环队列
-std::condition_variable winNotFull; // 滑动窗口非满条件变量
+std::condition_variable canSend; // 滑动窗口非满且接收方缓存有空余
 std::mutex winMutex;             // 滑动窗口锁
 Timer timer(TIMEOUT);            // 定时器，单位s，目前不是线程安全的
 std::atomic_bool isConnect;      // 已连接
 
-CircleQueue<rdt_t *> recvBuf(RECV_BUF); // 接收缓冲
+CircleQueue<rdt_t *> recvBuf(SENDER_RECV_BUF); // 接收缓冲
 std::condition_variable notFull;
 std::condition_variable notEmpty;
 std::mutex bufLock;
 
+std::atomic_ushort recvRwnd; // 接收方的rwnd
 
 /**
  * @brief 接收线程任务
@@ -86,7 +86,7 @@ void recv_task()
 
 /**
  * @brief 解析线程任务
- * 
+ *
  */
 void parse_task()
 {
@@ -94,7 +94,7 @@ void parse_task()
     SOCKADDR_IN sock;
     int len = sizeof(sock);
     int result;
-    rdt_t* recvPkt = nullptr;
+    rdt_t *recvPkt = nullptr;
     while (true)
     {
         delete recvPkt;
@@ -112,6 +112,18 @@ void parse_task()
             printf("corrupt package %u\n");
             continue;
         }
+#ifdef FLOW_CONTROL
+        {
+            std::unique_lock<std::mutex> ul(winMutex);
+            recvRwnd.store(recvPkt->rwnd);
+            LOG(printf("recvRwnd: %u\n", recvPkt->rwnd));
+            if(recvPkt->rwnd > 0){
+                timer.conti();
+                canSend.notify_one();
+            }
+        }
+
+#endif
         if (isAck(recvPkt))
         {
             if (isFin(recvPkt))
@@ -158,7 +170,7 @@ void parse_task()
                     if (size != sendWin.size()) {
                         printf("recv_task: size: %u, sendWin.size(): %u\n", size, sendWin.size());
                     })
-                winNotFull.notify_all();
+                canSend.notify_one();
                 if (sendWin.empty())
                 {
                     timer.stop();
@@ -179,7 +191,6 @@ void parse_task()
     recvPkt = nullptr;
     printf("parse_task quit!\n");
 }
-
 
 void resend_task()
 {
@@ -211,12 +222,16 @@ void resend_task()
     printf("resend_task quit!\n");
 }
 
-void rdt_send(char *data, uint16_t dataLen, uint8_t flag = 0)
+void rdt_send(char *data, uint16_t dataLen, uint16_t flag = 0)
 {
-    std::unique_lock<std::mutex> ul(winMutex);
     while (true)
     {
+        std::unique_lock<std::mutex> ul(winMutex);
+#ifdef FLOW_CONTROL
+        if (!sendWin.full() && recvRwnd >= 1)
+#else
         if (!sendWin.full())
+#endif
         {
             LOG(
                 auto size = (nextseqnum - base + NUM_SEQNUM) % NUM_SEQNUM;
@@ -251,8 +266,17 @@ void rdt_send(char *data, uint16_t dataLen, uint8_t flag = 0)
         }
         else
         {
-            // refuse data
-            winNotFull.wait(ul); // 阻塞，并释放锁
+#ifdef FLOW_CONTROL
+            LOG(printf("sendWin(%u) size: %u, recvRwnd size: %u\n", N, sendWin.size(), recvRwnd.load()))
+            if(recvRwnd < 1){
+                // 理论上，还要暂停重发线程，并且设置新的定时器，超时后，向对方发送一个探索报文，获得对方更新的窗口信息。
+                // 但在这里我不停止超时重发的报文段了，因为它既是对方不给我发送的根源，又能作为定时探索报文，何必再新建一个定时器呢？
+                // timer.stop();
+            }
+#else
+            LOG(printf("sendWin(%u) size: %u\n", N, sendWin.size()));
+#endif
+            canSend.wait(ul); // 阻塞，并释放锁
         }
     }
 }
@@ -354,7 +378,6 @@ int main(int argc, char **argv)
         memset(sendBuf, 0, DATA_SIZE);
     }
     fin.close();
-
 
     // 断开连接
     printf("waiting to disconnect...\n");

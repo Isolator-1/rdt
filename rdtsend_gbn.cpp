@@ -48,7 +48,7 @@ std::mutex winMutex;             // 滑动窗口锁
 Timer timer(TIMEOUT);            // 定时器，单位s，目前不是线程安全的
 std::atomic_bool isConnect;      // 已连接
 
-CircleQueue<rdt_t *> recvBuf(RECV_BUF); // 接收缓冲
+CircleQueue<rdt_t *> recvBuf(SENDER_RECV_BUF); // 接收缓冲
 std::condition_variable notFull;
 std::condition_variable notEmpty;
 std::mutex bufLock;
@@ -215,7 +215,7 @@ void resend_task()
     printf("resend_task quit!\n");
 }
 
-void rdt_send(char *data, uint16_t dataLen, uint8_t flag = 0)
+void rdt_send(char *data, uint16_t dataLen, uint16_t flag = 0)
 {
     std::unique_lock<std::mutex> ul(winMutex);
     while (true)
@@ -236,15 +236,13 @@ void rdt_send(char *data, uint16_t dataLen, uint8_t flag = 0)
             {
                 LOG(
                     // if(sendWin.size()>0){
-                    //     rdt_t * last = new rdt_t();
+                    //     rdt_t *last;
                     //     sendWin.index(sendWin.size() - 1, last);
                     //     auto dist = (sendPkt->seqnum - last->seqnum + N) % N;
                     //     if(dist != 1){
                     //         printf("lastseq: %u, nowseq: %u\n", last->seqnum, sendPkt->seqnum);
                     //         assert(dist == 1);
                     //     }
-                    //     delete last;
-                    //     last = nullptr;
                     // }
                 )
                 b = sendWin.enqueue(sendPkt);

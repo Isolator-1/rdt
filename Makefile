@@ -5,7 +5,7 @@ LIB = -lws2_32
 TEST_DIR = test/
 BIN_DIR = bin/
 
-all: rdtsend_gbn  rdtrecv_gbn rdtsend_tcp rdtrecv_tcp
+all: rdtsend_tcp rdtrecv_tcp
 
 test_rdt: $(TEST_DIR)test_rdt.cpp rdt.cpp
 	$(CC) $(CC_FLAGS) $^ -o $(BIN_DIR)$@
@@ -20,6 +20,10 @@ test_io: $(TEST_DIR)test_io.cpp
 	.\$(BIN_DIR)$@.exe
 
 test_cq: $(TEST_DIR)test_cq.cpp
+	$(CC) $(CC_FLAGS) $^ -o $(BIN_DIR)$@
+	.\$(BIN_DIR)$@.exe
+
+test_lock: $(TEST_DIR)test_lock.cpp
 	$(CC) $(CC_FLAGS) $^ -o $(BIN_DIR)$@
 	.\$(BIN_DIR)$@.exe
 
