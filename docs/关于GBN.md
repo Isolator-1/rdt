@@ -35,53 +35,7 @@ struct rdt_t
 
 在发送前打包数据时计算校验和：每2字节读取打包后的协议包，加到校验和字段，溢出则回卷。
 
-```c++
-void make_pkt(rdt_t* pktBuf, uint8_t flag, uint32_t seqnum, uint8_t* data, uint16_t dataLen){
-    assert(dataLen <= DATA_SIZE);
-    pktBuf->sum = 0;
-    pktBuf->flag = flag;
-    pktBuf->seqnum = seqnum;
-    pktBuf->dataLen = dataLen;
-    memcpy_s(pktBuf->data, DATA_SIZE, data, dataLen);
-    uint16_t validLen = sizeof(rdt_t) - DATA_SIZE + dataLen;
-    uint16_t i = 0;
-    uint16_t* p = (uint16_t*)pktBuf;
-    uint32_t sum = 0;
-    for(; i < validLen; i += 2){
-        sum += *p; 
-        rollback(sum);
-        p++;
-    }
-    if (i > validLen) {
-        p--;
-        sum += *(uint8_t*)p;
-        rollback(sum);
-    }
-    pktBuf->sum = ~(sum & 0xFFFF);
-}
-```
-
 在接收后，使用相同的算法，计算出校验和并与校验和字段比较。该算法可以发现一位错，一位错也是大概率事件。
-
-```c++
-bool not_corrupt(rdt_t* pktBuf){
-    uint32_t sum = 0;
-    uint16_t i = 0;
-    uint16_t* p = (uint16_t*)pktBuf;
-    uint16_t validLen = sizeof(rdt_t) - DATA_SIZE + pktBuf->dataLen;
-    for(; i < validLen; i += 2){
-        sum += *p; 
-        rollback(sum);
-        p++;
-    }
-    if (i > validLen) {
-        p--;
-        sum += *(uint8_t*)p;
-        rollback(sum);
-    }
-    return sum == 0xFFFF;
-}
-```
 
 ## 符号/名词解释
 
@@ -121,7 +75,9 @@ bool not_corrupt(rdt_t* pktBuf){
 
 ### 接收方
 
-GBN的接收方只有一个任务：收到数据包，校验并将其序列号与自己期望的序列号`expectedseqnum`比对，如果相同，则接收该数据包，`expectedseqnum`更新为`(expectedseqnum + 1) % NUM_SEQNUM`；否则，抛弃该数据包。最后向发送方发回序号为`expectedseqnum`的ACK。主线程中就可以搞定。
+GBN的接收方只有一个任务：收到数据包，校验并将其序列号与自己期望的序列号`expectedseqnum`比对，如果相同，则接收该数据包，`expectedseqnum`更新为`(expectedseqnum + 1) % NUM_SEQNUM`；否则，抛弃该数据包。最后向发送方发回序号为`expectedseqnum`的ACK。~~主线程中就可以搞定~~。
+
+实验表明，如果接收方使用单线程，当窗口大小比较大（在我的机器上>8）时，接收方会“漏听”发来的数据包。因此应当启动一个用于接收的守护线程，并维护一个接收、发送线程同步访问的缓冲队列。
 
 ## 连接与断开连接
 
