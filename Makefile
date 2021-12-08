@@ -26,7 +26,7 @@ test_cq: $(TEST_DIR)test_cq.cpp
 rdtsend_gbn: rdtsend_gbn.cpp timer.cpp rdt.cpp
 	$(CC) $(CC_FLAGS) $^ $(LIB) -o $(BIN_DIR)$@
 
-rdtrecv_gbn: rdtrecv_gbn.cpp rdt.cpp
+rdtrecv_gbn: rdtrecv_gbn.cpp timer.cpp rdt.cpp
 	$(CC) $(CC_FLAGS) $^ $(LIB) -o $(BIN_DIR)$@
 
 rdtsend_tcp: rdtsend_tcp.cpp timer.cpp rdt.cpp

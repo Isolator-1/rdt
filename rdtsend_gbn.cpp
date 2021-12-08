@@ -9,6 +9,8 @@
  *
  */
 
+// TODO: 把GBN改出了bug，(或者原来就有)，后续应当检查发送端滑动窗口中数据包序号是否连续
+
 #include <winsock2.h>
 #include <stdio.h>
 #include <cstdlib>
@@ -130,12 +132,14 @@ void parse_task()
                 std::lock_guard<std::mutex> lg(winMutex);
                 // 收到确认，如果确认号是滑动窗口第一个，则前推滑动窗口
                 auto lastBase = base;
-                auto curr = (recvPkt->seqnum + 1) % NUM_SEQNUM;
+                // auto curr = (recvPkt->seqnum + 1) % NUM_SEQNUM;
+                base = (lastBase + 1) % NUM_SEQNUM;
                 rdt_t *abandoned = nullptr;
                 bool b = true;
-                if (curr == (lastBase + 1) % NUM_SEQNUM)
+                // if (curr == (lastBase + 1) % NUM_SEQNUM)
+                if(base == (lastBase + 1) % NUM_SEQNUM)
                 {
-                    base = curr;
+                    // base = curr;
                     LOG(printf("ACK %u\n", recvPkt->seqnum))
                     b = sendWin.pop(abandoned);
                     if (abandoned != nullptr)
@@ -155,7 +159,7 @@ void parse_task()
                         printf("parse_task: size: %u, sendWin.size(): %u\n", size, sendWin.size());
                         assert(size == sendWin.size());
                     })
-                winNotFull.notify_all();
+                winNotFull.notify_one();
                 if (sendWin.empty())
                 {
                     timer.stop();
@@ -226,10 +230,23 @@ void rdt_send(char *data, uint16_t dataLen, uint8_t flag = 0)
             rdt_t *sendPkt = new rdt_t();
             rdt_t *abandoned = nullptr;
             make_pkt(sendPkt, flag, nextseqnum, (uint8_t *)data, dataLen);
-            auto index = (nextseqnum - base + NUM_SEQNUM) % NUM_SEQNUM;
+            auto index = (nextseqnum - base + N) % N;
             auto b = false;
             if (index == sendWin.size())
             {
+                LOG(
+                    // if(sendWin.size()>0){
+                    //     rdt_t * last = new rdt_t();
+                    //     sendWin.index(sendWin.size() - 1, last);
+                    //     auto dist = (sendPkt->seqnum - last->seqnum + N) % N;
+                    //     if(dist != 1){
+                    //         printf("lastseq: %u, nowseq: %u\n", last->seqnum, sendPkt->seqnum);
+                    //         assert(dist == 1);
+                    //     }
+                    //     delete last;
+                    //     last = nullptr;
+                    // }
+                )
                 b = sendWin.enqueue(sendPkt);
                 LOG(assert(b))
             }
@@ -237,9 +254,8 @@ void rdt_send(char *data, uint16_t dataLen, uint8_t flag = 0)
             {
                 b = sendWin.index(index, abandoned);
                 LOG(assert(b))
-                // delete abandoned;
-                // abandoned = nullptr;
                 sendWin.replace(index, sendPkt);
+                LOG(assert(abandoned->seqnum == sendPkt->seqnum))
                 // abandoned = sendPkt;
             }
             sendto(senderSocket, (char *)sendPkt, sizeof(rdt_t), 0, (SOCKADDR *)&recverAddr, sizeof(SOCKADDR));
