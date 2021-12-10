@@ -10,12 +10,9 @@
 
 #pragma comment(lib, "ws2_32.lib")
 
-using namespace std::chrono;
 
 int main(int argc, char** argv)
 {
-    system_clock::time_point recvBegin;
-    system_clock::time_point recvEnd;
     char outpurfile[64] = "output/test.txt";
     uint64_t filesize = 0;
     uint16_t recverPort = RECVER_PORT;
@@ -75,7 +72,6 @@ int main(int argc, char** argv)
                     #ifdef DEBUG
                         printf("FIN\n");
                     #endif
-                    recvEnd = system_clock::now();  // 停止传输
                     filesize = fout.tellp();
                     fout.close();
                     make_pkt(&sendBuf, ACK_FLAG | FIN_FLAG, expectedseqnum, 0, 0);
@@ -86,7 +82,6 @@ int main(int argc, char** argv)
                     #ifdef DEBUG
                         printf("SYN\n");
                     #endif
-                    recvBegin = system_clock::now();  // 开始传输
                     make_pkt(&sendBuf, ACK_FLAG | SYN_FLAG, 0, 0, 0);
                     sendto(recverSocket, (char*)&sendBuf, sizeof(rdt_t), 0, (SOCKADDR*)&senderAddr, sizeof(SOCKADDR));
                     continue;
@@ -123,10 +118,6 @@ int main(int argc, char** argv)
     }
     closesocket(recverSocket);
     WSACleanup();
-    auto duration = duration_cast<microseconds>(recvEnd - recvBegin);
-    double costTime = duration.count()/1000.0;
-    double throughput = (filesize * 8) / (costTime / 1000) / 1e6;
-    printf("finished!\n File size: %u Bytes. Cost %.2f ms\n"
-    "Throughput rate: %.2f Mb/s\n", filesize, costTime, throughput);
+    printf("finished!\n File size: %u Bytes.\n", filesize);
     return 0;
 }

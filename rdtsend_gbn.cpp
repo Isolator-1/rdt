@@ -21,6 +21,11 @@
 #define TIMEOUT 0.5                 // 超时时间, 单位s
 #define INTERVAL 50                 // 检查定时器时间间隔，单位ms
 
+using namespace std::chrono;
+system_clock::time_point sendBegin;
+system_clock::time_point sendEnd;
+uint64_t filesize;
+
 
 SOCKET senderSocket;
 SOCKADDR_IN recverAddr;
@@ -45,11 +50,11 @@ void recv_task(){
         result = recvfrom(senderSocket, (char*)&pktBuf, sizeof(rdt_t), 0, (SOCKADDR*)&sock, &len);
         if (result == SOCKET_ERROR) {
             int e =  WSAGetLastError();
-            if (e == 10054){
-                // 未发现远程主机错误，出现该错误通常是因为先启动发送方，后启动接收方，因此不因为该错误结束接收线程
-                printf("Cannot find recver\n");
-                continue;
-            }
+            // if (e == 10054){
+            //     // 未发现远程主机错误，出现该错误通常是因为先启动发送方，后启动接收方，因此不因为该错误结束接收线程
+            //     printf("Cannot find recver\n");
+            //     continue;
+            // }
             printf("Receive error %d\n", e);
             break;
         }
@@ -66,6 +71,7 @@ void recv_task(){
                 #ifdef DEBUG
                     printf("FIN ACK %u\n", pktBuf.seqnum);
                 #endif
+                sendEnd = system_clock::now();
                 break;
             }else if(isSyn(&pktBuf)) {
                 #ifdef DEBUG
@@ -273,10 +279,12 @@ int main(int argc, char** argv)
     char sendBuf[DATA_SIZE];
     memset(sendBuf, 0, DATA_SIZE);
     std::ifstream fin(inputfile, std::ios::binary); 
+    sendBegin = system_clock::now();
     while(fin)
     {
         fin.read(sendBuf, DATA_SIZE);
         rdt_send(sendBuf, fin.gcount());
+        filesize += fin.gcount();
         memset(sendBuf, 0, DATA_SIZE);
     }   
     fin.close();
@@ -286,7 +294,13 @@ int main(int argc, char** argv)
     printf("waiting to disconnect...\n");
     rdt_send(0, 0, FIN_FLAG);
     recvThread.join();
-    printf("disconnect\n");
+
+    auto duration = duration_cast<microseconds>(sendEnd - sendBegin);
+    double costTime = duration.count() / 1000.0;
+    double throughput = (filesize * 8) / (costTime / 1000) / 1e6;
+    printf("finished!\nFile size: %u Bytes. Cost %.2f ms\n"
+           "Throughput rate: %.2f Mb/s\n",
+           filesize, costTime, throughput);
 
     closesocket(senderSocket);
     WSACleanup();
