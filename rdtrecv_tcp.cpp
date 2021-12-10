@@ -29,7 +29,6 @@
 #define DELAY        // 使用延时ACK
 #define ACK_DELAY 30 // 延时发送的ACK的延时，单位ms
 
-
 WSADATA WSAData;
 SOCKET recverSocket;
 SOCKADDR_IN senderAddr;
@@ -43,36 +42,32 @@ CircleQueue<rdt_t *> recvWin(N); // 接收滑动窗口
 ThreadPool TP(1);                // 用于延迟ACK的线程池
 std::atomic_bool cancleDelay;
 
+uint16_t holesInWin = N;
 
-// uint16_t holesInWin = RECVER_RECV_BUF; // TODO: 某种原因没有维护好，负溢
-
-// /**
-//  * @brief 获得滑动窗口中的空洞数，时间复杂度O(N)，如果维护一个空洞数变量会更快一些
-//  * 注意recvWin的大小并不总是保持在N，因此需要num递减
-//  *
-//  * @return 滑动窗口中的空洞数
-//  */
-// uint16_t holes_in_win()
-// {
-//     uint16_t num = RECVER_RECV_BUF;
-//     rdt_t *tmp;
-//     recvWin.rewind();
-//     while (recvWin.hasNext())
-//     {
-//         recvWin.getNext(tmp);
-//         if (tmp != nullptr)
-//         {
-//             num--;
-//         }
-//     }
-//     LOG(
-//         assert(num >= 0);
-//         assert(num <= RECVER_RECV_BUF))
-//     return num;
-//     // return holesInWin;
-// }
-
-
+/**
+ * @brief 获得Rwnd，为接收缓冲剩余和滑动窗口缓冲剩余的最小值
+ * @return Rwnd
+ */
+uint16_t getRwnd()
+{
+    // uint16_t num = RECVER_RECV_BUF;
+    // rdt_t *tmp;
+    // recvWin.rewind();
+    // while (recvWin.hasNext())
+    // {
+    //     recvWin.getNext(tmp);
+    //     if (tmp != nullptr)
+    //     {
+    //         num--;
+    //     }
+    // }
+    // LOG(
+    //     assert(num >= 0);
+    //     assert(num <= RECVER_RECV_BUF))
+    // return num;
+    uint16_t recvBufRemain = RECVER_RECV_BUF - recvBuf.size();
+    return std::min(holesInWin, recvBufRemain);
+}
 
 /**
  * @brief 接收线程任务
@@ -124,7 +119,7 @@ void delay_ack(uint32_t num)
     // }
     rwnd = recvWin.size();
 #ifdef FLOW_CONTROL
-    make_pkt(&sendPkt, ACK_FLAG, num, 0, 0, RECVER_RECV_BUF - recvBuf.size());
+    make_pkt(&sendPkt, ACK_FLAG, num, 0, 0, getRwnd());
 #else
     make_pkt(&sendPkt, ACK_FLAG, num, 0, 0);
 #endif
@@ -160,7 +155,7 @@ int main(int argc, char **argv)
                outpurfile, recverPort, recverAddrStr);
     }
 #ifdef FLOW_CONTROL
-    make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0, RECVER_RECV_BUF - recvBuf.size());
+    make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0, getRwnd());
 #else
     make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0);
 #endif
@@ -210,7 +205,7 @@ int main(int argc, char **argv)
             {
                 LOG(printf("SYN\n"))
 #ifdef FLOW_CONTROL
-                make_pkt(&sendPkt, ACK_FLAG | SYN_FLAG, 0, 0, 0, RECVER_RECV_BUF - recvBuf.size());
+                make_pkt(&sendPkt, ACK_FLAG | SYN_FLAG, 0, 0, 0, getRwnd());
 #else
                 make_pkt(&sendPkt, ACK_FLAG | SYN_FLAG, 0, 0, 0);
 #endif
@@ -223,7 +218,7 @@ int main(int argc, char **argv)
                 {
                     // 所具有期望序号的按序报文段到达，逻辑上是填入缓冲区的0位置再弹出，实际上就不填了
                     expectedseqnum = (expectedseqnum + 1) % NUM_SEQNUM;
-                    // holesInWin--;
+                    holesInWin--;
                     if (isFin(recvPkt))
                     {
                         // 若下一的期望的正好是FIN包，则滑动窗口中不再有其他有效包
@@ -235,7 +230,7 @@ int main(int argc, char **argv)
                                 assert(tmp == nullptr);
                             })
 #ifdef FLOW_CONTROL
-                        make_pkt(&sendPkt, FIN_FLAG | ACK_FLAG, expectedseqnum, 0, 0, RECVER_RECV_BUF - recvBuf.size());
+                        make_pkt(&sendPkt, FIN_FLAG | ACK_FLAG, expectedseqnum, 0, 0, getRwnd());
 #else
                         make_pkt(&sendPkt, FIN_FLAG | ACK_FLAG, expectedseqnum, 0, 0);
 #endif
@@ -248,7 +243,7 @@ int main(int argc, char **argv)
                     fout.write((char *)recvPkt->data, recvPkt->dataLen);
                     recvWin.pop();
                     recvWin.enqueue(nullptr);
-                    // holesInWin++;
+                    holesInWin++;
                     LOG(assert(recvWin.full()))
                     rdt_t *writened = nullptr;
                     uint32_t acc = 0; // 滑动窗口中连续缓存的个数
@@ -259,7 +254,7 @@ int main(int argc, char **argv)
                             break;
                         }
                         recvWin.pop();
-                        // holesInWin++;
+                        holesInWin++;
                         bool end = false;
                         if (isFin(writened))
                         {
@@ -271,7 +266,7 @@ int main(int argc, char **argv)
                                     assert(tmp == nullptr);
                                 })
 #ifdef FLOW_CONTROL
-                            make_pkt(&sendPkt, FIN_FLAG | ACK_FLAG, expectedseqnum, 0, 0, RECVER_RECV_BUF - recvBuf.size());
+                            make_pkt(&sendPkt, FIN_FLAG | ACK_FLAG, expectedseqnum, 0, 0, getRwnd());
 #else
                             make_pkt(&sendPkt, FIN_FLAG | ACK_FLAG, expectedseqnum, 0, 0);
 #endif
@@ -308,7 +303,7 @@ int main(int argc, char **argv)
                         // 立即发送累积ACK
                         cancleDelay.store(true);
 #ifdef FLOW_CONTROL
-                        make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0, RECVER_RECV_BUF - recvBuf.size());
+                        make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0, getRwnd());
 #else
                         make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0);
 #endif
@@ -316,7 +311,7 @@ int main(int argc, char **argv)
                     }
 #else
 #ifdef FLOW_CONTROL
-                    make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0, RECVER_RECV_BUF - recvBuf.size());
+                    make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0, getRwnd());
 #else
                     make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0)
 #endif
@@ -335,10 +330,10 @@ int main(int argc, char **argv)
                     {
                         // 之前该位置没有缓存
                         recvWin.replace(dist, new rdt_t(*recvPkt));
-                        // holesInWin--;
+                        holesInWin--;
                     }
 #ifdef FLOW_CONTROL
-                    make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0, RECVER_RECV_BUF - recvBuf.size());
+                    make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0, getRwnd());
 #else
                     make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0);
 #endif
@@ -356,6 +351,7 @@ int main(int argc, char **argv)
             {
                 LOG(printf("abandon %d\n", recvPkt->seqnum))
             }
+            make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0, getRwnd());
             sendto(recverSocket, (char *)&sendPkt, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
         }
     }
