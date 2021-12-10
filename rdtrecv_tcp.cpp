@@ -27,7 +27,7 @@
 #pragma comment(lib, "ws2_32.lib")
 
 #define DELAY        // 使用延时ACK
-#define ACK_DELAY 30 // 延时发送的ACK的延时，单位ms
+#define ACK_DELAY 500 // 延时发送的ACK的延时，单位ms
 
 WSADATA WSAData;
 SOCKET recverSocket;
