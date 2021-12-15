@@ -373,6 +373,7 @@ void rdt_send(char *data, uint16_t dataLen, uint16_t flag = 0)
         else
         {
 #ifdef FLOW_CONTROL
+
 #ifdef CONGESTION_CONTROL
             LOG(printf("rdt_send blocked! sendWin(%u): %u, recvRwnd: %u, cwnd: %u\n", N, sendWin.size(), recvRwnd, cwnd))
 #else
@@ -381,6 +382,7 @@ void rdt_send(char *data, uint16_t dataLen, uint16_t flag = 0)
             // {
             // 理论上，还要暂停重发线程，并且设置新的定时器，超时后，向对方发送一个探索报文，获得对方更新的窗口信息。
             // 但在这里我不停止超时重发的报文段了，因为它既是对方不给我发送的根源，又能作为定时探索报文，何必再新建一个定时器呢？
+            // TODO：思考，是否存在这样的情况：接收方rwmd=0时，发送方可能也没有在重发？
             // timer.stop();
             // }
 #endif // CONGESTION_CONTROL
