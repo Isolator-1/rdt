@@ -13,6 +13,10 @@ bool Timer::check()
     {
         return true;
     }
+    if (alert){
+        alert = false;
+        return false;
+    }
     auto end = std::chrono::system_clock::now();
     std::chrono::duration<double> diff = end - start;
     return diff.count() < upper;

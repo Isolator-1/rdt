@@ -27,6 +27,10 @@ test_lock: $(TEST_DIR)test_lock.cpp
 	$(CC) $(CC_FLAGS) $^ -o $(BIN_DIR)$@
 	.\$(BIN_DIR)$@.exe
 
+test_precompile: $(TEST_DIR)test_precompile.cpp
+	$(CC) $(CC_FLAGS) $^ -o $(BIN_DIR)$@
+	.\$(BIN_DIR)$@.exe
+
 rdtsend_gbn: rdtsend_gbn.cpp timer.cpp rdt.cpp
 	$(CC) $(CC_FLAGS) $^ $(LIB) -o $(BIN_DIR)$@
 
