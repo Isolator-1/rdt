@@ -1,4 +1,4 @@
-#include "./include/rdt.hpp"
+#include "../include/rdt.hpp"
 #include "assert.h"
 #include "string.h"
 #include "stdio.h"

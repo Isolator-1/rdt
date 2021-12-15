@@ -15,7 +15,7 @@
 
 int main ()
 {
-    Timer t(5);
+    Timer t(5000);
     t.rewind();
     int i = 0;
     while(true){

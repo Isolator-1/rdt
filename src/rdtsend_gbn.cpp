@@ -1,13 +1,15 @@
 /**
  * @file rdtsend_gbn.cpp
  * @author zqs
- * @brief 使用类TCP协议的发送方
+ * @brief 使用GBN协议的发送方
  * @version 0.1
  * @date 2021-12-07
  *
  * @copyright Copyright (c) 2021
  *
  */
+
+// TODO: 把GBN改出了bug，(或者原来就有)，后续应当检查发送端滑动窗口中数据包序号是否连续
 
 #include <winsock2.h>
 #include <stdio.h>
@@ -22,10 +24,10 @@
 #include <atomic>
 #include <thread>
 #include <assert.h>
-#include "./include/timer.hpp"
-#include "./include/rdt.hpp"
-#include "./include/def.hpp"
-#include "./include/circlequeue.tpp"
+#include "../include/timer.hpp"
+#include "../include/rdt.hpp"
+#include "../include/def.hpp"
+#include "../include/circlequeue.tpp"
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -39,34 +41,16 @@ SOCKADDR_IN recverAddr;
 
 uint32_t base = 0;
 uint32_t nextseqnum = 0;
-CircleQueue<rdt_t *> sendWin(N); // 保存已发送但是待确认数据包的循环队列
-std::condition_variable canSend; // 滑动窗口非满且接收方缓存有空余
-std::mutex winMutex;             // 滑动窗口锁
-Timer timer(TIMEOUT);            // 定时器，单位s，在winMutex的保护下，线程安全
-std::atomic_bool isConnect;      // 已连接
+CircleQueue<rdt_t *> sendWin(N);    // 保存已发送但是待确认数据包的循环队列
+std::condition_variable winNotFull; // 滑动窗口非满条件变量
+std::mutex winMutex;                // 滑动窗口锁
+Timer timer(TIMEOUT);               // 定时器，单位ms，目前不是线程安全的
+std::atomic_bool isConnect;         // 已连接
 
 CircleQueue<rdt_t *> recvBuf(SENDER_RECV_BUF); // 接收缓冲
 std::condition_variable notFull;
 std::condition_variable notEmpty;
 std::mutex bufLock;
-
-// 都是在获得到winMutex的前提下修改一下值，因此可以不必使用原子量
-// std::atomic_ushort recvRwnd; // 接收方的rwnd
-uint16_t recvRwnd;
-
-#define SLOW_START 0     // 慢启动
-#define WRED 1           // 拥塞避免
-#define QUICK_RECOVERY 2 // 快速恢复
-
-// 三个线程都是在获得到winMutex的前提下修改一下值，因此可以不必使用原子量
-// std::atomic_ushort cwnd;       // 用于拥塞控制的窗口
-// std::atomic_ushort ssthresh;   // 慢启动阈值
-// std::atomic_uchar dupAckCount; // 冗余ACK个数
-// std::atomic_uchar state;       // 当前状态
-uint16_t cwnd = 1;                 // 用于拥塞控制的窗口
-uint16_t ssthresh = INIT_SSTHRESH; // 慢启动阈值
-uint8_t dupAckCount = DUP_ACK;     // 冗余ACK个数
-uint8_t state = SLOW_START;        // 当前状态
 
 /**
  * @brief 接收线程任务
@@ -128,32 +112,16 @@ void parse_task()
             printf("corrupt package %u\n");
             continue;
         }
-#ifdef FLOW_CONTROL
-        {
-            std::unique_lock<std::mutex> ul(winMutex);
-            // recvRwnd.store(recvPkt->rwnd);
-            recvRwnd = recvPkt->rwnd;
-            LOG(printf("recvRwnd: %u\n", recvPkt->rwnd));
-            if (recvPkt->rwnd > 0)
-            {
-                timer.conti();
-                canSend.notify_one();
-            }
-        }
-
-#endif
         if (isAck(recvPkt))
         {
             if (isFin(recvPkt))
             {
-                // 先不在这做拥塞控制
                 LOG(printf("FIN ACK %u\n", recvPkt->seqnum))
                 sendEnd = system_clock::now();
                 break;
             }
             else if (isSyn(recvPkt))
             {
-                // 先不在这做拥塞控制
                 LOG(printf("SYN ACK %u\n", recvPkt->seqnum))
                 isConnect.store(true);
                 continue;
@@ -161,95 +129,36 @@ void parse_task()
             else
             {
                 std::lock_guard<std::mutex> lg(winMutex);
-                // 收到确认，如果确认号比先前的位置大不过N，则前推滑动窗口（累积确认）
+                // 收到确认，如果确认号是滑动窗口第一个，则前推滑动窗口
                 auto lastBase = base;
+                // auto curr = (recvPkt->seqnum + 1) % NUM_SEQNUM;
+                base = (lastBase + 1) % NUM_SEQNUM;
                 rdt_t *abandoned = nullptr;
                 bool b = true;
-                auto dist = (recvPkt->seqnum - lastBase + NUM_SEQNUM) % NUM_SEQNUM;
-                if (dist > 0 && dist <= N)
+                // if (curr == (lastBase + 1) % NUM_SEQNUM)
+                if (base == (lastBase + 1) % NUM_SEQNUM)
                 {
-                    dupAckCount = 0;
-#ifdef CONGESTION_CONTROL
-                    // new ACK
-                    LOG(printf("new ACK, state: %u, cwnd: %u, ssthresh: %u, dupACKCount: %u\n", state, cwnd, ssthresh, dupAckCount))
-                    static uint16_t dcwnd; // 拥塞避免阶段，控制cwnd增加速度的状态量
-                    switch (state)
+                    // base = curr;
+                    LOG(printf("ACK %u\n", recvPkt->seqnum))
+                    b = sendWin.pop(abandoned);
+                    if (abandoned != nullptr)
                     {
-                    case SLOW_START:
-                        cwnd++;
-                        if (cwnd >= ssthresh)
-                        {
-                            state = WRED;
-                        }
-                        dcwnd = 0;
-                        break;
-                    case WRED:
-                        dcwnd++;
-                        if (dcwnd == cwnd)
-                        {
-                            cwnd++;
-                            dcwnd = 0;
-                        }
-                        break;
-                    case QUICK_RECOVERY:
-                        cwnd = ssthresh;
-                        state = WRED;
-                        break;
-                    }
-#endif
-                    base = recvPkt->seqnum;
-                    LOG(printf("ACK [%u, %u)\n", lastBase, recvPkt->seqnum))
-                    for (auto i = 0; i < dist; i++)
-                    {
-                        sendWin.pop(abandoned);
-                        if (abandoned != nullptr)
-                        {
-                            delete abandoned;
-                            abandoned = nullptr;
-                        }
+                        delete abandoned;
+                        abandoned = nullptr;
                     }
                 }
                 else
                 {
-                    if (dupAckCount < DUP_ACK)
-                    {
-                        dupAckCount++;
-                    }
-#ifdef FAST_RETRANSMIT
-                    if (dupAckCount == DUP_ACK)
-                    {
-                        LOG(printf("FAST RETRANSMIT\n"))
-                        timer.stop_earlier();
-                    }
-#endif
-#ifdef CONGESTION_CONTROL
-                    // DUP ACK
-                    LOG(printf("dup ACK, state: %u, cwnd: %u, ssthresh: %u, dupACKCount: %u\n", state, cwnd, ssthresh, dupAckCount))
-                    switch (state)
-                    {
-                    case SLOW_START:
-                    case WRED:
-                        if (dupAckCount == DUP_ACK)
-                        {
-                            ssthresh = std::max(cwnd / 2, 1);
-                            cwnd = ssthresh + DUP_ACK;
-                            state = QUICK_RECOVERY;
-                        }
-                        break;
-                    case QUICK_RECOVERY:
-                        cwnd++;
-                        break;
-                    }
-#endif
-                    LOG(printf("DUP ACK %u\n", recvPkt->seqnum))
+                    LOG(printf("DUP ACK %u\n"))
                 }
                 LOG(
                     assert(b);
                     auto size = (nextseqnum - base + NUM_SEQNUM) % NUM_SEQNUM;
                     if (size != sendWin.size()) {
-                        printf("recv_task: size: %u, sendWin.size(): %u\n", size, sendWin.size());
+                        printf("parse_task: size: %u, sendWin.size(): %u\n", size, sendWin.size());
+                        assert(size == sendWin.size());
                     })
-                canSend.notify_one();
+                winNotFull.notify_one();
                 if (sendWin.empty())
                 {
                     timer.stop();
@@ -283,37 +192,22 @@ void resend_task()
         }
         else
         {
-            // 在超时范围内，队列没有被清空
             std::lock_guard<std::mutex> lg(winMutex);
-            dupAckCount = 0;
-#ifdef CONGESTION_CONTROL
-            // timeout
-            LOG(printf("dup ACK, state: %u, cwnd: %u, ssthresh: %u, dupACKCount: %u\n", state, cwnd, ssthresh, dupAckCount))
-            switch (state)
-            {
-            case SLOW_START:
-                ssthresh = std::max(cwnd / 2, 1);
-                cwnd = 1;
-                break;
-            case WRED:
-            case QUICK_RECOVERY:
-                ssthresh = std::max(cwnd / 2, 1);
-                cwnd = 1;
-                state = SLOW_START;
-                break;
-            }
-
-#endif
+            // 在超时范围内，队列没有被清空
             LOG(
-                printf("timeout: resend seq %u\n", base);
+                printf("timeout: resend size %d\n", sendWin.size());
                 auto size = (nextseqnum - base + NUM_SEQNUM) % NUM_SEQNUM;
                 if (size != sendWin.size()) {
                     printf("resend_task: size: %u, sendWin.size(): %u\n", size, sendWin.size());
                 })
-            // 只重传一个
-            rdt_t *first;
-            sendWin.top(first);
-            sendto(senderSocket, (char *)first, sizeof(rdt_t), 0, (SOCKADDR *)&recverAddr, sizeof(SOCKADDR));
+            rdt_t *next;
+            sendWin.rewind();
+            while (sendWin.hasNext())
+            {
+                sendWin.getNext(next);
+                LOG(assert(next != nullptr))
+                sendto(senderSocket, (char *)next, sizeof(rdt_t), 0, (SOCKADDR *)&recverAddr, sizeof(SOCKADDR));
+            }
             timer.rewind();
         }
     }
@@ -322,22 +216,10 @@ void resend_task()
 
 void rdt_send(char *data, uint16_t dataLen, uint16_t flag = 0)
 {
+    std::unique_lock<std::mutex> ul(winMutex);
     while (true)
     {
-        std::unique_lock<std::mutex> ul(winMutex);
-#ifdef FLOW_CONTROL
-#ifdef CONGESTION_CONTROL
-        if (!sendWin.full() && recvRwnd >= sendWin.size() && cwnd >= sendWin.size())
-#else
-        if (!sendWin.full() && recvRwnd >= sendWin.size())
-#endif // CONGESTION_CONTROL
-#else
-#ifdef CONGESTION_CONTROL
-        if (!sendWin.full() && cwnd >= sendWin.size())
-#else
         if (!sendWin.full())
-#endif // CONGESTION_CONTROL
-#endif // FLOW_CONTROL
         {
             LOG(
                 auto size = (nextseqnum - base + NUM_SEQNUM) % NUM_SEQNUM;
@@ -347,16 +229,31 @@ void rdt_send(char *data, uint16_t dataLen, uint16_t flag = 0)
             rdt_t *sendPkt = new rdt_t();
             rdt_t *abandoned = nullptr;
             make_pkt(sendPkt, flag, nextseqnum, (uint8_t *)data, dataLen);
-            auto index = (nextseqnum - base + NUM_SEQNUM) % NUM_SEQNUM;
+            auto index = (nextseqnum - base + N) % N;
             auto b = false;
             if (index == sendWin.size())
             {
+                LOG(
+                    // if(sendWin.size()>0){
+                    //     rdt_t *last;
+                    //     sendWin.index(sendWin.size() - 1, last);
+                    //     auto dist = (sendPkt->seqnum - last->seqnum + N) % N;
+                    //     if(dist != 1){
+                    //         printf("lastseq: %u, nowseq: %u\n", last->seqnum, sendPkt->seqnum);
+                    //         assert(dist == 1);
+                    //     }
+                    // }
+                )
                 b = sendWin.enqueue(sendPkt);
                 LOG(assert(b))
             }
             else if (index < sendWin.size())
             {
-                abandoned = sendPkt;
+                b = sendWin.index(index, abandoned);
+                LOG(assert(b))
+                sendWin.replace(index, sendPkt);
+                LOG(assert(abandoned->seqnum == sendPkt->seqnum))
+                // abandoned = sendPkt;
             }
             sendto(senderSocket, (char *)sendPkt, sizeof(rdt_t), 0, (SOCKADDR *)&recverAddr, sizeof(SOCKADDR));
             delete abandoned;
@@ -372,26 +269,8 @@ void rdt_send(char *data, uint16_t dataLen, uint16_t flag = 0)
         }
         else
         {
-#ifdef FLOW_CONTROL
-#ifdef CONGESTION_CONTROL
-            LOG(printf("rdt_send blocked! sendWin(%u): %u, recvRwnd: %u, cwnd: %u\n", N, sendWin.size(), recvRwnd, cwnd))
-#else
-            LOG(printf("rdt_send blocked! sendWin(%u): %u, recvRwnd: %u\n", N, sendWin.size(), recvRwnd))
-            // if (recvRwnd < 1)
-            // {
-            // 理论上，还要暂停重发线程，并且设置新的定时器，超时后，向对方发送一个探索报文，获得对方更新的窗口信息。
-            // 但在这里我不停止超时重发的报文段了，因为它既是对方不给我发送的根源，又能作为定时探索报文，何必再新建一个定时器呢？
-            // timer.stop();
-            // }
-#endif // CONGESTION_CONTROL
-#else
-#ifdef CONGESTION_CONTROL
-            LOG(printf("rdt_send blocked! sendWin(%u): %u, cwnd: %u\n", N, sendWin.size(), cwnd))
-#else
-            LOG(printf("rdt_send blocked! sendWin(%u): %u\n", N, sendWin.size()));
-#endif                        // CONGESTION_CONTROL
-#endif                        // FLOW_CONTROL
-            canSend.wait(ul); // 阻塞，并释放锁
+            // refuse data
+            winNotFull.wait(ul); // 阻塞，并释放锁
         }
     }
 }
