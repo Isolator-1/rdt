@@ -228,7 +228,7 @@ void rdt_send(char *data, uint16_t dataLen, uint16_t flag = 0)
     {
         std::unique_lock<std::mutex> ul(winMutex);
 #ifdef FLOW_CONTROL
-        if (!sendWin.full() && recvRwnd >= 1)
+        if (!sendWin.full() && recvRwnd >= sendWin.size())
 #else
         if (!sendWin.full())
 #endif
