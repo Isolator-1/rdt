@@ -290,7 +290,7 @@ void resend_task()
             dupAckCount = 0;
 #ifdef CONGESTION_CONTROL
             // timeout
-            LOG(printf("dup ACK, state: %u, cwnd: %u, ssthresh: %u, dupACKCount: %u\n", state, cwnd, ssthresh, dupAckCount))
+            LOG(printf("timeout, state: %u, cwnd: %u, ssthresh: %u, dupACKCount: %u\n", state, cwnd, ssthresh, dupAckCount))
             switch (state)
             {
             case SLOW_START:
@@ -413,7 +413,7 @@ void connect()
 
 int main(int argc, char **argv)
 {
-    char inputfile[64] = "input/test.txt";
+    char inputfile[64] = "D:\\files\\Projects\\202111\\reliable_udp\\input\\3.jpg";
     uint16_t senderPort = SENDER_PORT;
     uint16_t recverPort = RECVER_PORT;
     char recverAddrStr[16] = DEFAULT_ADDR;
