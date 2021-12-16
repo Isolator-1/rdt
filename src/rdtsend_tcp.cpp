@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <string.h>
 #include <iostream>
+#include <iomanip>
 #include <fstream>
 #include <WinSock2.h>
 #include <vector>
@@ -509,7 +510,9 @@ int main(int argc, char **argv)
            "Throughput rate: %.2f Mb/s\n",
            filesize, costTime, throughput);
     std::ofstream rout("./result.txt");
-    rout << filesize << " " << costTime << " " << throughput << std::endl;
+    rout << filesize << " ";
+    rout << std::fixed << std::setprecision(2) << costTime << " ";
+    rout << std::fixed << std::setprecision(2) << throughput << std::endl;
     rout.close();
     closesocket(senderSocket);
     WSACleanup();

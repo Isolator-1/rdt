@@ -3,7 +3,7 @@
  * @author zqs
  * @brief autogeneration
  * @version 0.1
- * @date Thu Dec 16 01:36:06 2021
+ * @date Thu Dec 16 10:00:13 2021
  *
  * @copyright Copyright (c) 2021
  *
@@ -14,7 +14,7 @@
 #define RECVER_PORT 9999
 #define DEFAULT_ADDR "127.0.0.1"
 #define N 32
-#define NUM_SEQNUM 16
+#define NUM_SEQNUM 65536
 #define TIMEOUT 200
 #define INTERVAL 50
 #define FLOW_CONTROL
