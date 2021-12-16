@@ -22,7 +22,7 @@ public:
     /**
      * @brief Construct a new Timer object
      * 
-     * @param _upper 时间上限，单位s
+     * @param _upper 时间上限，单位ms
      */
     Timer(double _upper): upper(_upper), running(false), alert(false){}
 

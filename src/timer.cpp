@@ -1,4 +1,4 @@
-#include "./include/timer.hpp"
+#include "../include/timer.hpp"
 #include <stdio.h>
 
 void Timer::rewind()
@@ -18,7 +18,7 @@ bool Timer::check()
         return false;
     }
     auto end = std::chrono::system_clock::now();
-    std::chrono::duration<double> diff = end - start;
+    std::chrono::duration<double, std::milli> diff = end - start;
     return diff.count() < upper;
 }
 

@@ -17,10 +17,10 @@
 #include <thread>
 #include <condition_variable>
 #include <atomic>
-#include "./include/timer.hpp"
-#include "./include/rdt.hpp"
-#include "./include/def.hpp"
-#include "./include/circlequeue.tpp"
+#include "../include/timer.hpp"
+#include "../include/rdt.hpp"
+#include "../include/def.hpp"
+#include "../include/circlequeue.tpp"
 
 #pragma comment(lib, "ws2_32.lib")
 
