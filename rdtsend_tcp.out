@@ -1,7 +1,0 @@
-inputfile: D:\files\Projects\202111\reliable_udp\input\3.jpg, recver port: 9999, recver addr: 127.0.0.1, sender port: 9997
-waiting to connect...
-resend_task enter!
-recv_task begin
-recv_task finished (10054)
-parse_task enter!
-corrupt package 1

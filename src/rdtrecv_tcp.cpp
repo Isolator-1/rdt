@@ -135,7 +135,7 @@ int main(int argc, char **argv)
     rdt_t *recvPkt = nullptr; // 接收方接收的数据包
     SOCKADDR_IN recverAddr;
     uint32_t expectedseqnum = 0; // 期望的下一个包的序号
-    char outpurfile[64] = "output/test.txt";
+    char outputfile[64] = "3.jpg";
     uint64_t filesize = 0;
     uint16_t recverPort = RECVER_PORT;
     char recverAddrStr[16] = DEFAULT_ADDR;
@@ -146,10 +146,10 @@ int main(int argc, char **argv)
     case 3:
         recverPort = atoi(argv[2]);
     case 2:
-        strcpy_s(outpurfile, argv[1]);
+        strcpy_s(outputfile, argv[1]);
     default:
         printf("outputfile: %s, recver port: %u, recver addr: %s\n",
-               outpurfile, recverPort, recverAddrStr);
+               outputfile, recverPort, recverAddrStr);
     }
 #ifdef FLOW_CONTROL
     make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0, getRwnd());
@@ -180,7 +180,7 @@ int main(int argc, char **argv)
     std::thread recvThread(recv_task);
     recvThread.detach();
 
-    std::ofstream fout(outpurfile, std::ios::binary);
+    std::ofstream fout(outputfile, std::ios::binary);
     while (fout.is_open())
     {
         delete recvPkt;
@@ -310,7 +310,7 @@ int main(int argc, char **argv)
 #ifdef FLOW_CONTROL
                     make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0, getRwnd());
 #else
-                    make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0)
+                    make_pkt(&sendPkt, ACK_FLAG, expectedseqnum, 0, 0);
 #endif
                     sendto(recverSocket, (char *)&sendPkt, sizeof(rdt_t), 0, (SOCKADDR *)&senderAddr, sizeof(SOCKADDR));
 #endif

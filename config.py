@@ -4,6 +4,13 @@
 
 import time
 import os
+import json
+
+RECV = ".\\rdtrecv_tcp.exe"
+SEND = ".\\rdtsend_tcp.exe"
+
+RECV_FLAGS = " 3.jpg 9999 127.0.0.1 >recv.out"
+SEND_FLAGS = " D:\\files\\Projects\\202111\\reliable_udp\\input\\3.jpg 8888 127.0.0.1 9997 >send.out"
 
 create_time = time.localtime(time.time())
 
@@ -66,9 +73,7 @@ while variate_key not in configs_in:
     print("Enter the parameter that you want to compare:")
     variate_key = input().strip()
 print("Enter a list of values of this variate: (split with <space>)")
-configs_in[variate_key] = list(
-    map(type(configs_in[variate_key]),
-        input().split()))
+configs_in[variate_key] = list(map(type(configs_in[variate_key]), map(eval, input().split())))
 
 configs_out = configs_in
 
@@ -88,6 +93,11 @@ output_dir = os.path.join(
     "bin", f"{variate_key}_{time.strftime('%Y%m%d_%H%M%S', create_time)}")
 os.makedirs(output_dir)
 def_path = os.path.join("include", "def.hpp")
+
+config_path = os.path.join(output_dir, "config.json")
+
+with open(config_path, 'w', encoding='utf-8') as f:
+    json.dump(configs_out, f)
 
 for varv in configs_out[variate_key]:
     sub_output_dir = os.path.join(output_dir, variate_key + "_" + str(varv))
@@ -113,3 +123,9 @@ for varv in configs_out[variate_key]:
     os.system(cmd)
     cmd = f"make BIN_DIR={sub_output_dir}/"
     os.system(cmd)
+    send_bat_path = os.path.join(sub_output_dir, "send.bat")
+    recv_bat_path = os.path.join(sub_output_dir, "recv.bat")
+    with open(send_bat_path, "w", encoding="utf-8") as f2:
+        f2.write(SEND + SEND_FLAGS + "\n")
+    with open(recv_bat_path, "w", encoding="utf-8") as f2:
+        f2.write(RECV + RECV_FLAGS + "\n")
